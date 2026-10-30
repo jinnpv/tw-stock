@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>台股即時報價</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#EEF1F4; --sheet:#FFFFFF; --ink:#16222E; --muted:#68757F; --line:#DCE2E8;
+  --accent:#2457D6; --up:#D4332C; --down:#0F8F5D; --track:#E3E8ED; --span:#C5CED8;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0E151C; --sheet:#141D26; --ink:#E8EDF2; --muted:#8C99A5; --line:#25313D;
+    --accent:#7FA2FF; --up:#FF6B63; --down:#3CC48A; --track:#1F2B36; --span:#3A4A59;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font:15px/1.5 "Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+}
+.wrap{max-width:560px; margin:0 auto; padding-bottom:calc(env(safe-area-inset-bottom) + 32px)}
+header{
+  position:sticky; top:0; z-index:5; background:var(--bg);
+  padding:calc(env(safe-area-inset-top) + 12px) 16px 10px;
+  display:flex; justify-content:space-between; align-items:center; gap:12px;
+}
+h1{font-size:18px; font-weight:700; margin:0}
+.status{
+  display:flex; align-items:center; gap:8px; background:none; border:0; color:var(--muted);
+  font:inherit; font-size:13px; padding:6px 0 6px 8px; cursor:pointer;
+}
+.status b{color:var(--ink); font-weight:500}
+.dot{width:8px; height:8px; border-radius:50%; background:var(--muted)}
+.live .dot{background:var(--accent)}
+.status time{font-variant-numeric:tabular-nums}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+
+form{display:flex; gap:8px; padding:0 16px 10px}
+input{
+  flex:1; min-width:0; height:44px; padding:0 12px; border:1px solid var(--line);
+  border-radius:8px; background:var(--sheet); color:var(--ink); font:inherit; font-size:16px;
+}
+input::placeholder{color:var(--muted)}
+.add{
+  height:44px; padding:0 18px; border:0; border-radius:8px; background:var(--accent);
+  color:#fff; font:inherit; font-weight:700; cursor:pointer;
+}
+@media (prefers-color-scheme: dark){ .add{color:#0E151C} }
+
+.notice{margin:0 16px 10px; font-size:13.5px; color:var(--up)}
+.notice:empty{display:none}
+
+.sheet{background:var(--sheet); border-top:1px solid var(--line); border-bottom:1px solid var(--line)}
+.row{border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row-main{
+  display:block; width:100%; text-align:left; background:none; border:0; color:inherit;
+  font:inherit; padding:14px 16px 12px; cursor:pointer;
+}
+.row-main:focus-visible{outline-offset:-2px}
+.top{display:flex; justify-content:space-between; align-items:flex-start; gap:12px}
+.name{font-weight:700; font-size:16px; line-height:1.3}
+.sub{color:var(--muted); font-size:12.5px; margin-top:2px; font-variant-numeric:tabular-nums}
+.quote{text-align:right}
+.px{
+  font:600 26px/1.1 "IBM Plex Sans","Noto Sans TC",system-ui,sans-serif;
+  font-variant-numeric:tabular-nums;
+}
+.chg{font-size:13.5px; margin-top:3px; font-variant-numeric:tabular-nums}
+.up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--muted)}
+
+.band{position:relative; height:6px; margin:14px 0 8px; background:var(--track); border-radius:3px}
+.band .span{position:absolute; top:0; bottom:0; background:var(--span); border-radius:3px}
+.band .prev{position:absolute; top:-3px; bottom:-3px; width:2px; margin-left:-1px; background:var(--muted)}
+.band .now{
+  position:absolute; top:50%; width:14px; height:14px; margin:-7px 0 0 -7px; border-radius:50%;
+  background:currentColor; border:3px solid var(--sheet);
+}
+.stats{display:flex; justify-content:space-between; font-size:12.5px; color:var(--muted); font-variant-numeric:tabular-nums}
+.stats b{color:var(--ink); font-weight:500}
+
+.detail{padding:2px 16px 14px}
+.facts{display:grid; grid-template-columns:repeat(3,1fr); gap:6px 12px; margin:0 0 12px; font-size:13px; font-variant-numeric:tabular-nums}
+.facts div{display:flex; flex-direction:column}
+.facts dt{color:var(--muted); font-size:12px}
+.facts dd{margin:0; font-weight:500}
+.book{width:100%; border-collapse:collapse; font-size:14px; font-variant-numeric:tabular-nums}
+.book th{font-weight:400; font-size:12px; color:var(--muted); text-align:right; padding:2px 0 4px}
+.book td{text-align:right; padding:3px 0}
+.book td:nth-child(2), .book th:nth-child(2){padding-right:14px}
+.book td:nth-child(3), .book th:nth-child(3){padding-left:14px; border-left:1px solid var(--line)}
+.rm{
+  margin-top:12px; background:none; border:0; padding:6px 0; color:var(--muted);
+  font:inherit; font-size:13px; text-decoration:underline; cursor:pointer;
+}
+.empty{padding:28px 16px; color:var(--muted); text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>台股即時報價</h1>
+    <button class="status" id="status" type="button" title="立即更新">
+      <span class="dot"></span><b id="mkt">—</b><time id="upd"></time>
+    </button>
+  </header>
+
+  <form id="add" autocomplete="off">
+    <input id="code" inputmode="text" enterkeyhint="done" placeholder="輸入代號，例如 2330" aria-label="股票代號">
+    <button class="add" type="submit">加入</button>
+  </form>
+  <p class="notice" id="notice" role="status"></p>
+
+  <main class="sheet" id="list"></main>
+</div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const KEY = 'tw_watchlist_v1';
+  const DEFAULT = ['t00', '2330', '2317'];
+  const norm = c => c.toLowerCase() === 't00' ? 't00' : c.toUpperCase();
+  const key = c => c.toLowerCase();
+
+  function loadList() {
+    try {
+      const v = JSON.parse(localStorage.getItem(KEY));
+      if (Array.isArray(v)) return v.map(norm);
+    } catch (e) {}
+    return DEFAULT.slice();
+  }
+  function saveList() {
+    try { localStorage.setItem(KEY, JSON.stringify(list)); } catch (e) {}
+  }
+
+  let list = loadList();
+  let quotes = {};
+  let missing = new Set();
+  const open = new Set();
+  let err = '';
+  let lastOk = null;
+
+  function h(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  const p2 = n => n == null ? '—' : n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const int = n => n == null ? '—' : n.toLocaleString('en-US');
+  const dir = n => n > 0 ? 'up' : n < 0 ? 'down' : 'flat';
+  const arrow = n => n > 0 ? '▲ ' : n < 0 ? '▼ ' : '';
+
+  /* ---------- 時間 ---------- */
+  function twParts(d = new Date()) {
+    const f = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Taipei', weekday: 'short', hour: '2-digit', minute: '2-digit',
+      second: '2-digit', hour12: false
+    });
+    const o = {};
+    f.formatToParts(d).forEach(p => o[p.type] = p.value);
+    return o;
+  }
+  function isOpen() {
+    const o = twParts();
+    if (o.weekday === 'Sat' || o.weekday === 'Sun') return false;
+    const m = (+o.hour % 24) * 60 + +o.minute;
+    return m >= 540 && m <= 810; // 09:00–13:30
+  }
+  function clock(d) {
+    const o = twParts(d);
+    return `${String(+o.hour % 24).padStart(2, '0')}:${o.minute}:${o.second}`;
+  }
+
+  /* ---------- 畫面 ---------- */
+  function band(q, d) {
+    if (q.low == null || q.high == null) return null;
+    const lo = q.down != null ? q.down : q.low;
+    const hi = q.up != null ? q.up : q.high;
+    if (!(hi > lo)) return null;
+    const pos = v => Math.max(0, Math.min(100, (v - lo) / (hi - lo) * 100));
+    const b = h('div', 'band ' + d);
+    const span = h('div', 'span');
+    span.style.left = pos(q.low) + '%';
+    span.style.width = Math.max(1.5, pos(q.high) - pos(q.low)) + '%';
+    b.append(span);
+    if (q.prev != null) {
+      const pv = h('div', 'prev');
+      pv.style.left = pos(q.prev) + '%';
+      b.append(pv);
+    }
+    if (q.price != null) {
+      const now = h('div', 'now');
+      now.style.left = pos(q.price) + '%';
+      b.append(now);
+    }
+    return b;
+  }
+
+  function stat(label, value) {
+    const s = h('span');
+    s.append(label + ' ');
+    s.append(h('b', null, value));
+    return s;
+  }
+
+  function detail(q, code) {
+    const box = h('div', 'detail');
+    const facts = h('dl', 'facts');
+    [['昨收', p2(q.prev)], ['漲停', p2(q.up)], ['跌停', p2(q.down)]].forEach(([k, v]) => {
+      const d = h('div');
+      d.append(h('dt', null, k), h('dd', null, v));
+      facts.append(d);
+    });
+    box.append(facts);
+
+    const n = Math.max(q.bids.length, q.asks.length);
+    if (n) {
+      const t = h('table', 'book');
+      const head = h('tr');
+      ['買量', '買價', '賣價', '賣量'].forEach(x => head.append(h('th', null, x)));
+      t.append(head);
+      for (let i = 0; i < n; i++) {
+        const b = q.bids[i], a = q.asks[i];
+        const r = h('tr');
+        r.append(h('td', null, b ? int(b.q) : ''), h('td', null, b ? p2(b.p) : ''),
+                 h('td', null, a ? p2(a.p) : ''), h('td', null, a ? int(a.q) : ''));
+        t.append(r);
+      }
+      box.append(t);
+    }
+    box.append(removeBtn(code));
+    return box;
+  }
+
+  function removeBtn(code) {
+    const b = h('button', 'rm', '從清單移除');
+    b.type = 'button';
+    b.addEventListener('click', () => {
+      list = list.filter(c => key(c) !== key(code));
+      open.delete(key(code));
+      saveList();
+      render();
+    });
+    return b;
+  }
+
+  function rowEl(code) {
+    const k = key(code);
+    const q = quotes[k];
+    const row = h('div', 'row');
+
+    if (!q) {
+      const m = h('div', 'row-main');
+      const top = h('div', 'top');
+      top.append(h('div', 'name', code), h('div', 'sub', missing.has(k) ? '找不到這個代號' : '讀取中…'));
+      m.append(top);
+      row.append(m);
+      if (missing.has(k)) {
+        const w = h('div', 'detail');
+        w.append(removeBtn(code));
+        row.append(w);
+      }
+      return row;
+    }
+
+    const d = dir(q.change || 0);
+    const btn = h('button', 'row-main');
+    btn.type = 'button';
+    btn.setAttribute('aria-expanded', open.has(k));
+    btn.addEventListener('click', () => {
+      open.has(k) ? open.delete(k) : open.add(k);
+      render();
+    });
+
+    const top = h('div', 'top');
+    const left = h('div');
+    left.append(h('div', 'name', q.name));
+    left.append(h('div', 'sub', `${q.code}　${q.market}${q.time ? '　' + q.time : ''}`));
+    const right = h('div', 'quote');
+    right.append(h('div', 'px ' + d, p2(q.price)));
+    const chgText = q.change == null ? '尚無成交'
+      : `${arrow(q.change)}${p2(Math.abs(q.change))}　${Math.abs(q.pct).toFixed(2)}%`;
+    right.append(h('div', 'chg ' + d, chgText));
+    top.append(left, right);
+    btn.append(top);
+
+    const b = band(q, d);
+    if (b) btn.append(b);
+
+    const stats = h('div', 'stats');
+    stats.append(stat('開', p2(q.open)), stat('高', p2(q.high)), stat('低', p2(q.low)));
+    if (k !== 't00') stats.append(stat('量', int(q.vol) + ' 張'));
+    btn.append(stats);
+
+    row.append(btn);
+    if (open.has(k)) row.append(detail(q, code));
+    return row;
+  }
+
+  function render() {
+    const root = $('#list');
+    root.textContent = '';
+    if (!list.length) {
+      root.append(h('div', 'empty', '清單是空的，輸入股票代號就能加入。'));
+    } else {
+      list.forEach(c => root.append(rowEl(c)));
+    }
+    const live = isOpen();
+    $('#status').classList.toggle('live', live);
+    $('#mkt').textContent = live ? '盤中' : '非盤中';
+    $('#upd').textContent = lastOk ? '更新 ' + clock(lastOk) : '';
+    if (err) notice(err);
+  }
+
+  function notice(msg) { $('#notice').textContent = msg || ''; }
+
+  /* ---------- 抓資料 ---------- */
+  let busy = null, again = false, timer = null;
+
+  async function doFetch() {
+    if (!list.length) { quotes = {}; missing = new Set(); render(); return; }
+    try {
+      const r = await fetch('/api/quotes?codes=' + encodeURIComponent(list.join(',')), {cache: 'no-store'});
+      const j = await r.json();
+      if (!j.ok) throw new Error(j.error || '發生錯誤');
+      quotes = {};
+      j.items.forEach(it => quotes[key(it.code)] = it);
+      missing = new Set(j.missing.map(key));
+      lastOk = new Date();
+      err = '';
+      if ($('#notice').textContent.startsWith('連線')) notice('');
+    } catch (e) {
+      err = !/^https?:$/.test(location.protocol) || e.name === 'SyntaxError'
+        ? '連線失敗：這個畫面只是預覽，沒有連到後端。請部署到 Render 後，用 Render 給的網址開啟。'
+        : '連線失敗：' + e.message + '，稍後自動重試';
+    }
+    render();
+  }
+
+  function refresh() {
+    if (busy) { again = true; return busy; }
+    busy = doFetch().finally(() => {
+      busy = null;
+      if (again) { again = false; refresh(); }
+      else schedule();
+    });
+    return busy;
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (document.hidden) schedule(); else refresh();
+    }, isOpen() ? 5000 : 30000);
+  }
+
+  /* ---------- 事件 ---------- */
+  $('#add').addEventListener('submit', e => {
+    e.preventDefault();
+    let v = $('#code').value.trim();
+    if (!v) return;
+    if (['大盤', '加權', '加權指數', 'TAIEX'].includes(v.toUpperCase())) v = 't00';
+    if (!/^[0-9A-Za-z]{1,8}$/.test(v)) { notice('代號只能是英數字，例如 2330'); return; }
+    v = norm(v);
+    $('#code').value = '';
+    if (list.some(c => key(c) === key(v))) { notice(v + ' 已經在清單裡'); return; }
+    notice('');
+    list.push(v);
+    saveList();
+    render();
+    refresh();
+  });
+  $('#status').addEventListener('click', () => refresh());
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+
+  render();
+  refresh();
+})();
+</script>
+</body>
+</html>
