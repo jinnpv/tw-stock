@@ -36,6 +36,10 @@ http.headers.update(
 )
 verify_tls = True
 session_at = 0.0
+diag = {"meta_err": "", "quote_err": "", "quote_ms": None}
+meta_http = requests.Session()
+meta_http.headers.update({"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9"})
+meta_verify = True
 
 fetch_lock = threading.Lock()
 meta_lock = threading.Lock()
@@ -68,10 +72,10 @@ def _get(url, **kw):
     """GET；若憑證在這個環境驗證失敗，退而不驗證（都是公開資料）。"""
     global verify_tls
     try:
-        return http.get(url, timeout=12, verify=verify_tls, **kw)
+        return http.get(url, timeout=(4, 10), verify=verify_tls, **kw)
     except requests.exceptions.SSLError:
         verify_tls = False
-        return http.get(url, timeout=12, verify=False, **kw)
+        return http.get(url, timeout=(4, 10), verify=False, **kw)
 
 
 def ensure_session(force=False):
@@ -102,8 +106,17 @@ def _pick(d, *names):
     return ""
 
 
+def _meta_get(url):
+    global meta_verify
+    try:
+        return meta_http.get(url, timeout=(4, 20), verify=meta_verify)
+    except requests.exceptions.SSLError:
+        meta_verify = False
+        return meta_http.get(url, timeout=(4, 20), verify=False)
+
+
 def _rows(url):
-    r = _get(url)
+    r = _meta_get(url)
     r.raise_for_status()
     if url.endswith(".csv"):
         text = r.content.decode("utf-8-sig", errors="replace")
@@ -119,6 +132,7 @@ def load_meta():
                  "https://mopsfin.twse.com.tw/opendata/t187ap03_O.csv"]),
     ]
     new = {}
+    errs = []
     for ex, urls in sources:
         for u in urls:
             try:
@@ -133,8 +147,11 @@ def load_meta():
                     n += 1
                 if n:
                     break
-            except Exception:
+                errs.append(f"{u} 沒有資料")
+            except Exception as e:
+                errs.append(f"{u} {type(e).__name__}: {str(e)[:80]}")
                 continue
+    diag["meta_err"] = " | ".join(errs)
     if new:
         with meta_lock:
             meta.clear()
@@ -320,19 +337,30 @@ def get_quotes(codes):
     last_err = None
     if need:
         with fetch_lock:  # 一次只讓一個請求去問證交所，其餘吃快取
-            now = time.time()
+            started = time.time()
+            now = started
             need = [c for c in need if not fresh(c, now)]
             for i in range(0, len(need), CHUNK):
+                if time.time() - started > 20:
+                    last_err = TimeoutError("證交所回應太慢")
+                    break
                 part = need[i:i + CHUNK]
                 try:
-                    ensure_session()
+                    try:
+                        ensure_session()
+                    except Exception:
+                        pass
                     try:
                         raw = fetch_raw(part)
                     except Exception:
-                        ensure_session(force=True)
+                        try:
+                            ensure_session(force=True)
+                        except Exception:
+                            pass
                         raw = fetch_raw(part)
                 except Exception as e:
                     last_err = e
+                    diag["quote_err"] = f"{type(e).__name__}: {str(e)[:120]}"
                     break
                 got = {}
                 for x in raw:
@@ -345,6 +373,8 @@ def get_quotes(codes):
                     quote_cache[c.lower()] = (ts, it)
                     if it:
                         record_history(it)
+                diag["quote_err"] = ""
+                diag["quote_ms"] = int((time.time() - started) * 1000)
                 if i + CHUNK < len(need):
                     time.sleep(0.3)
     out = []
@@ -471,6 +501,21 @@ def api_series():
         if s:
             out[c] = s
     return reply({"ok": True, "series": out})
+
+
+@app.get("/api/diag")
+def api_diag():
+    return reply({
+        "server_time": tw_now().strftime("%Y-%m-%d %H:%M:%S"),
+        "market_open": market_open(),
+        "meta_ok": meta_state["ok"],
+        "meta_count": len(meta),
+        "meta_err": diag["meta_err"],
+        "quote_err": diag["quote_err"],
+        "last_fetch_ms": diag["quote_ms"],
+        "cached_quotes": len(quote_cache),
+        "watching": len(watch),
+    })
 
 
 @app.get("/api/groups")
