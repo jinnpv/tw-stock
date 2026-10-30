@@ -441,9 +441,11 @@ input::placeholder{color:var(--muted)}
   async function doFetch() {
     const codes = viewCodes();
     if (!codes.length) { render(); return; }
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 25000);
     try {
       const r = await fetch('/api/quotes', {
-        method: 'POST', cache: 'no-store',
+        method: 'POST', cache: 'no-store', signal: ctl.signal,
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({codes, pin: inWatch()})
       });
@@ -456,10 +458,12 @@ input::placeholder{color:var(--muted)}
       err = '';
       if ($('#notice').textContent.startsWith('連線')) notice('');
     } catch (e) {
-      err = !/^https?:$/.test(location.protocol) || e.name === 'SyntaxError'
-        ? '連線失敗：這個畫面只是預覽，沒有連到後端。請用 Render 給的網址開啟。'
-        : '連線失敗：' + e.message + '，稍後自動重試';
-    }
+      if (!/^https?:$/.test(location.protocol)) err = '連線失敗：這個畫面只是預覽，沒有連到後端。請用 Render 給的網址開啟。';
+      else if (e.name === 'AbortError') err = '連線失敗：伺服器回應太慢，稍後自動重試';
+      else if (e.name === 'SyntaxError') err = '連線失敗：伺服器回傳異常，稍後自動重試';
+      else if (e.message === 'Load failed' || e.message === 'Failed to fetch') err = '連線失敗：連不上伺服器（免費版剛醒來要等約 1 分鐘），稍後自動重試';
+      else err = '連線失敗：' + e.message + '，稍後自動重試';
+    } finally { clearTimeout(to); }
     render();
     maybeSeries();
   }
