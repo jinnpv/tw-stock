@@ -70,10 +70,10 @@ def _get(url, **kw):
     """GET；若憑證在這個環境驗證失敗，退而不驗證（都是公開資料）。"""
     global verify_tls
     try:
-        return http.get(url, timeout=(4, 10), verify=verify_tls, **kw)
+        return http.get(url, timeout=(3, 6), verify=verify_tls, **kw)
     except requests.exceptions.SSLError:
         verify_tls = False
-        return http.get(url, timeout=(4, 10), verify=False, **kw)
+        return http.get(url, timeout=(3, 6), verify=False, **kw)
 
 
 def ensure_session(force=False):
@@ -374,48 +374,61 @@ def fresh(code, now):
     return bool(ent) and now - ent[0] < CACHE_SECONDS
 
 
+def _refresh(need):
+    """向證交所更新 need 這幾檔；整體最多約 12 秒。回傳錯誤（沒有就是 None）。"""
+    started = time.time()
+    need = [c for c in need if not fresh(c, started)]
+    last_err = None
+    for i in range(0, len(need), CHUNK):
+        if time.time() - started > 12:
+            return TimeoutError("證交所回應太慢")
+        part = need[i:i + CHUNK]
+        try:
+            try:
+                ensure_session()
+            except Exception:
+                pass
+            try:
+                raw = fetch_raw(part)
+            except Exception:
+                if time.time() - started > 8:
+                    raise
+                try:
+                    ensure_session(force=True)
+                except Exception:
+                    pass
+                raw = fetch_raw(part)
+        except Exception as e:
+            diag["quote_err"] = f"{type(e).__name__}: {str(e)[:120]}"
+            return e
+        got = {}
+        for x in raw:
+            if x.get("n"):  # 查無此代碼的項目沒有名稱
+                it = normalize(x)
+                got[it["code"].lower()] = it
+        ts = time.time()
+        for c in part:
+            quote_cache[c.lower()] = (ts, got.get(c.lower()))
+        diag["quote_err"] = ""
+        diag["quote_ms"] = int((time.time() - started) * 1000)
+        if i + CHUNK < len(need):
+            time.sleep(0.3)
+    return last_err
+
+
 def get_quotes(codes):
     now = time.time()
     need = [c for c in codes if not fresh(c, now)]
     last_err = None
     if need:
-        with fetch_lock:  # 一次只讓一個請求去問證交所，其餘吃快取
-            started = time.time()
-            need = [c for c in need if not fresh(c, started)]
-            for i in range(0, len(need), CHUNK):
-                if time.time() - started > 20:
-                    last_err = TimeoutError("證交所回應太慢")
-                    break
-                part = need[i:i + CHUNK]
-                try:
-                    try:
-                        ensure_session()
-                    except Exception:
-                        pass
-                    try:
-                        raw = fetch_raw(part)
-                    except Exception:
-                        try:
-                            ensure_session(force=True)
-                        except Exception:
-                            pass
-                        raw = fetch_raw(part)
-                except Exception as e:
-                    last_err = e
-                    diag["quote_err"] = f"{type(e).__name__}: {str(e)[:120]}"
-                    break
-                got = {}
-                for x in raw:
-                    if x.get("n"):  # 查無此代碼的項目沒有名稱
-                        it = normalize(x)
-                        got[it["code"].lower()] = it
-                ts = time.time()
-                for c in part:
-                    quote_cache[c.lower()] = (ts, got.get(c.lower()))
-                diag["quote_err"] = ""
-                diag["quote_ms"] = int((time.time() - started) * 1000)
-                if i + CHUNK < len(need):
-                    time.sleep(0.3)
+        # 最多等 6 秒搶鎖；搶不到就先用舊資料，避免把伺服器的工作執行緒全部卡住
+        if fetch_lock.acquire(timeout=6):
+            try:
+                last_err = _refresh(need)
+            finally:
+                fetch_lock.release()
+        else:
+            last_err = TimeoutError("伺服器忙碌")
     out = []
     for c in codes:
         ent = quote_cache.get(c.lower())
