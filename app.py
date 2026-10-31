@@ -87,7 +87,39 @@ def tw_now():
     return datetime.now(TZ)
 
 
+IND_KEY = {v: k for k, v in IND_NAMES.items()}
+
+
 # ---------------------------------------------------------------- 公司資料 / 產業別 / 龍頭
+def load_companies_file():
+    """讀 GitHub Actions 每天產生的 companies.json（不用連證交所）。"""
+    path = os.path.join(BASE_DIR, "companies.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        comp = data.get("companies") or {}
+        if len(comp) < 500:
+            return False
+        new = {}
+        for code, v in comp.items():
+            name, ind, ex, shares = v
+            new[code.upper()] = {"n": name, "ind": ind, "indname": ind, "ex": ex, "shares": shares}
+        found = dict(data.get("leaders") or {})
+    except Exception as e:
+        diag["meta_status"] = f"companies.json 讀取失敗：{type(e).__name__}"
+        return False
+    with meta_lock:
+        meta.clear()
+        meta.update(new)
+        leaders.clear()
+        leaders.update(found)
+    diag["leaders"] = len(found)
+    meta_state.update(ok=True, at=time.time())
+    ind_cache["at"] = 0.0
+    diag["meta_status"] = f"已載入 companies.json（{data.get('updated', '?')}）：{len(new)} 檔公司、{len(found)} 個產業龍頭"
+    return True
+
+
 def _pick(d, *names):
     for k in names:
         v = d.get(k)
@@ -240,7 +272,8 @@ def load_meta():
 def meta_loop():
     while True:
         try:
-            load_meta()
+            if not load_companies_file():
+                load_meta()
         except Exception as e:
             diag["meta_status"] = f"失敗：{type(e).__name__}: {str(e)[:100]}"
         time.sleep(43200 if meta_state["ok"] else 90)
@@ -255,7 +288,7 @@ def build_industries():
     for code, m in items:
         raw = (m.get("ind") or "").strip()
         name = m.get("indname") or "其他"
-        k = raw.zfill(2) if raw.isdigit() else "99"
+        k = raw.zfill(2) if raw.isdigit() else IND_KEY.get(name, "99")
         b = buckets.setdefault(name, {"k": k, "codes": []})
         b["codes"].append(code)
     out = []
@@ -447,6 +480,7 @@ def start_background():
     if _started:
         return
     _started = True
+    load_companies_file()  # 先同步讀檔，第一個請求進來時就有產業資料
     threading.Thread(target=meta_loop, daemon=True).start()
 
 
