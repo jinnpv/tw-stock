@@ -26,7 +26,6 @@ UA = (
 CACHE_SECONDS = 3       # 同一檔 3 秒內不重複問證交所
 CHUNK = 50              # 每次最多問 50 檔
 MAX_CODES = 800
-MAX_POLL = 150          # 背景最多同時記錄幾檔走勢
 CODE_RE = re.compile(r"^[0-9A-Za-z]{1,8}$")
 TZ = timezone(timedelta(hours=8))
 
@@ -36,22 +35,21 @@ http.headers.update(
 )
 verify_tls = True
 session_at = 0.0
-diag = {"meta_err": "", "quote_err": "", "quote_ms": None}
+
 meta_http = requests.Session()
 meta_http.headers.update({"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9"})
 meta_verify = True
 
 fetch_lock = threading.Lock()
 meta_lock = threading.Lock()
-hist_lock = threading.Lock()
-watch_lock = threading.Lock()
 
 quote_cache = {}   # code(lower) -> (ts, item | None)
-history = {}       # code(lower) -> {"date": "YYYYMMDD", "pts": {minute_idx: price}}
-watch = {}         # code -> (last_seen_ts, pinned)
-meta = {}          # code(upper) -> {"n": 名稱, "ind": 產業別, "ex": "tse" | "otc"}
+meta = {}          # code(upper) -> {"n","ind","indname","ex","shares","cap"}
+leaders = {}       # 產業名稱 -> 龍頭代號
 meta_state = {"ok": False, "at": 0.0}
 ind_cache = {"at": 0.0, "data": []}
+diag = {"meta_status": "尚未開始", "meta_err": "", "quote_err": "", "quote_ms": None,
+        "prices": 0, "leaders": 0}
 
 IND_NAMES = {
     "01": "水泥工業", "02": "食品工業", "03": "塑膠工業", "04": "紡織纖維",
@@ -67,7 +65,7 @@ IND_NAMES = {
 }
 
 
-# ---------------------------------------------------------------- 網路
+# ---------------------------------------------------------------- 報價用網路
 def _get(url, **kw):
     """GET；若憑證在這個環境驗證失敗，退而不驗證（都是公開資料）。"""
     global verify_tls
@@ -89,15 +87,7 @@ def tw_now():
     return datetime.now(TZ)
 
 
-def market_open():
-    n = tw_now()
-    if n.weekday() >= 5:
-        return False
-    m = n.hour * 60 + n.minute
-    return 535 <= m <= 811  # 08:55–13:31
-
-
-# ---------------------------------------------------------------- 公司基本資料 / 產業別
+# ---------------------------------------------------------------- 公司資料 / 產業別 / 龍頭
 def _pick(d, *names):
     for k in names:
         v = d.get(k)
@@ -106,67 +96,154 @@ def _pick(d, *names):
     return ""
 
 
-def _meta_get(url):
-    global meta_verify
+def _pick_like(d, *parts):
+    for k, v in d.items():
+        if v not in (None, "") and any(p in str(k) for p in parts):
+            return str(v).strip()
+    return ""
+
+
+def _to_num(v):
     try:
-        return meta_http.get(url, timeout=(4, 20), verify=meta_verify)
-    except requests.exceptions.SSLError:
-        meta_verify = False
-        return meta_http.get(url, timeout=(4, 20), verify=False)
+        return float(str(v).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
 
 
-def _rows(url):
-    r = _meta_get(url)
-    r.raise_for_status()
+def _meta_fetch(url, limit=30):
+    """下載整份檔案；整體最多 limit 秒，連名稱解析卡住也會被放棄。"""
+    global meta_verify
+    box = {}
+
+    def work():
+        global meta_verify
+        try:
+            try:
+                r = meta_http.get(url, timeout=(4, 8), stream=True, verify=meta_verify)
+            except requests.exceptions.SSLError:
+                meta_verify = False
+                r = meta_http.get(url, timeout=(4, 8), stream=True, verify=False)
+            r.raise_for_status()
+            deadline = time.time() + limit
+            chunks = []
+            for ch in r.iter_content(65536):
+                chunks.append(ch)
+                if time.time() > deadline:
+                    r.close()
+                    raise TimeoutError("下載太久")
+            box["data"] = b"".join(chunks)
+        except Exception as e:
+            box["err"] = e
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(limit + 5)
+    if t.is_alive():
+        raise TimeoutError("連線卡住")
+    if "err" in box:
+        raise box["err"]
+    return box["data"]
+
+
+def _meta_rows(url):
+    raw = _meta_fetch(url)
+    text = raw.decode("utf-8-sig", errors="replace")
     if url.endswith(".csv"):
-        text = r.content.decode("utf-8-sig", errors="replace")
         return list(csv.DictReader(io.StringIO(text)))
-    return r.json()
+    return json.loads(text)
+
+
+def _try_sources(label, urls, errs):
+    for u in urls:
+        diag["meta_status"] = f"下載 {label}：{u.split('/')[-1]}"
+        try:
+            rows = _meta_rows(u)
+            if rows:
+                return rows
+            errs.append(f"{u} 沒有資料")
+        except Exception as e:
+            errs.append(f"{u} {type(e).__name__}: {str(e)[:80]}")
+    return []
 
 
 def load_meta():
-    sources = [
-        ("tse", ["https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
-                 "https://mopsfin.twse.com.tw/opendata/t187ap03_L.csv"]),
-        ("otc", ["https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
-                 "https://mopsfin.twse.com.tw/opendata/t187ap03_O.csv"]),
-    ]
-    new = {}
     errs = []
-    for ex, urls in sources:
-        for u in urls:
-            try:
-                n = 0
-                for d in _rows(u):
-                    code = _pick(d, "公司代號", "SecuritiesCompanyCode", "Code")
-                    if not code or not CODE_RE.match(code):
-                        continue
-                    name = _pick(d, "公司簡稱", "CompanyAbbreviation", "公司名稱", "CompanyName")
-                    ind = _pick(d, "產業別", "SecuritiesIndustryCode", "Industry")
-                    new[code.upper()] = {"n": name, "ind": ind, "ex": ex}
-                    n += 1
-                if n:
-                    break
-                errs.append(f"{u} 沒有資料")
-            except Exception as e:
-                errs.append(f"{u} {type(e).__name__}: {str(e)[:80]}")
+    new = {}
+
+    for ex, label, urls in [
+        ("tse", "上市公司", ["https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+                            "https://mopsfin.twse.com.tw/opendata/t187ap03_L.csv"]),
+        ("otc", "上櫃公司", ["https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
+                            "https://mopsfin.twse.com.tw/opendata/t187ap03_O.csv"]),
+    ]:
+        for d in _try_sources(label, urls, errs):
+            code = _pick(d, "公司代號", "SecuritiesCompanyCode", "Code")
+            if not code or not CODE_RE.match(code):
                 continue
+            ind = _pick(d, "產業別", "SecuritiesIndustryCode", "Industry")
+            if ind.isdigit():
+                indname = IND_NAMES.get(ind.zfill(2), ind)
+            else:
+                indname = ind
+            new[code.upper()] = {
+                "n": _pick(d, "公司簡稱", "CompanyAbbreviation", "公司名稱", "CompanyName"),
+                "ind": ind,
+                "indname": indname,
+                "ex": ex,
+                "shares": _to_num(_pick_like(d, "已發行普通股", "IssueShares", "IssuedShares")),
+            }
+
+    # 收盤價（用來算市值，決定龍頭）
+    prices = {}
+    for label, urls in [
+        ("上市收盤價", ["https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"]),
+        ("上櫃收盤價", ["https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"]),
+    ]:
+        for d in _try_sources(label, urls, errs):
+            code = _pick(d, "Code", "SecuritiesCompanyCode", "代號")
+            px = _to_num(_pick(d, "ClosingPrice", "Close", "收盤價", "收盤"))
+            if code and px:
+                prices[code.upper()] = px
+
     diag["meta_err"] = " | ".join(errs)
+    diag["prices"] = len(prices)
     if new:
+        best = {}
+        for code, m in new.items():
+            m["cap"] = m["shares"] * prices[code] if m["shares"] and code in prices else None
+            if not m["indname"] or m["indname"] in ("80", "管理股票"):
+                continue
+            b = best.setdefault(m["indname"], [])
+            b.append((code, m))
+        found = {}
+        for name, items in best.items():
+            with_cap = [(m["cap"], c) for c, m in items if m["cap"]]
+            if with_cap:
+                found[name] = max(with_cap)[1]
+            else:
+                with_sh = [(m["shares"], c) for c, m in items if m["shares"]]
+                if with_sh:
+                    found[name] = max(with_sh)[1]
         with meta_lock:
             meta.clear()
             meta.update(new)
+            leaders.clear()
+            leaders.update(found)
+        diag["leaders"] = len(found)
         meta_state.update(ok=True, at=time.time())
         ind_cache["at"] = 0.0
+        diag["meta_status"] = f"完成：{len(new)} 檔公司、{len(prices)} 筆收盤價、{len(found)} 個產業龍頭"
+    else:
+        diag["meta_status"] = "失敗：沒有取得公司資料"
 
 
 def meta_loop():
     while True:
         try:
             load_meta()
-        except Exception:
-            pass
-        time.sleep(43200 if meta_state["ok"] else 60)
+        except Exception as e:
+            diag["meta_status"] = f"失敗：{type(e).__name__}: {str(e)[:100]}"
+        time.sleep(43200 if meta_state["ok"] else 90)
 
 
 def build_industries():
@@ -177,11 +254,8 @@ def build_industries():
     buckets = {}
     for code, m in items:
         raw = (m.get("ind") or "").strip()
-        if raw.isdigit():
-            k = raw.zfill(2)
-            name = IND_NAMES.get(k, raw)
-        else:
-            k, name = "99", (raw or "其他")
+        name = m.get("indname") or "其他"
+        k = raw.zfill(2) if raw.isdigit() else "99"
         b = buckets.setdefault(name, {"k": k, "codes": []})
         b["codes"].append(code)
     out = []
@@ -258,16 +332,7 @@ def normalize(x):
         chg = round(price - prev, 2)
         pct = round((price - prev) / prev * 100, 2)
     vol = num(x.get("v"))
-    tv = num(x.get("tv"))
     ex = x.get("ex")
-    bids = levels(x.get("b"), x.get("g"))
-    asks = levels(x.get("a"), x.get("f"))
-    side = None  # 單量顏色：外盤(紅) / 內盤(綠)，由最新成交價與買賣一檔推測
-    if price is not None and bids and asks:
-        if price >= asks[0]["p"]:
-            side = "out"
-        elif price <= bids[0]["p"]:
-            side = "in"
     return {
         "code": x.get("c"),
         "name": x.get("n"),
@@ -281,49 +346,27 @@ def normalize(x):
         "low": num(x.get("l")),
         "up": num(x.get("u")),
         "down": num(x.get("w")),
-        "vol": int(vol) if vol is not None else None,     # 總量（張）
-        "lastq": int(tv) if tv is not None else None,     # 單量（張）
-        "side": side,
+        "vol": int(vol) if vol is not None else None,  # 總量（張）
         "time": x.get("t"),
         "date": x.get("d"),
-        "bids": bids,
-        "asks": asks,
+        "bids": levels(x.get("b"), x.get("g")),
+        "asks": levels(x.get("a"), x.get("f")),
     }
 
 
-def record_history(it):
-    p, t, d = it.get("price"), it.get("time"), it.get("date")
-    if p is None or not t or not d:
-        return
-    try:
-        hh, mm, _ = t.split(":")
-        idx = int(hh) * 60 + int(mm) - 540
-    except Exception:
-        return
-    if idx < 0:
-        return
-    idx = min(idx, 270)
-    code = it["code"].lower()
-    with hist_lock:
-        h = history.get(code)
-        if not h or h["date"] != d:
-            h = history[code] = {"date": d, "pts": {}}
-        h["pts"][idx] = p
-
-
-def series_for(code):
-    with hist_lock:
-        h = history.get(code.lower())
-        if not h or not h["pts"]:
-            return None
-        pts = dict(h["pts"])
-        date = h["date"]
-    out, cur = [], None
-    for i in range(max(pts) + 1):
-        if i in pts:
-            cur = pts[i]
-        out.append(cur)
-    return {"d": date, "p": out}
+def decorate(it):
+    """補上產業別與是否為產業龍頭。"""
+    out = dict(it)
+    code = (it.get("code") or "").upper()
+    m = meta.get(code)
+    if m and m.get("indname"):
+        out["industry"] = m["indname"]
+        out["leader"] = leaders.get(m["indname"]) == code
+    elif code == "T00":
+        out["industry"] = "加權指數"
+    elif code.startswith("00"):
+        out["industry"] = "ETF"
+    return out
 
 
 def fresh(code, now):
@@ -338,8 +381,7 @@ def get_quotes(codes):
     if need:
         with fetch_lock:  # 一次只讓一個請求去問證交所，其餘吃快取
             started = time.time()
-            now = started
-            need = [c for c in need if not fresh(c, now)]
+            need = [c for c in need if not fresh(c, started)]
             for i in range(0, len(need), CHUNK):
                 if time.time() - started > 20:
                     last_err = TimeoutError("證交所回應太慢")
@@ -369,10 +411,7 @@ def get_quotes(codes):
                         got[it["code"].lower()] = it
                 ts = time.time()
                 for c in part:
-                    it = got.get(c.lower())
-                    quote_cache[c.lower()] = (ts, it)
-                    if it:
-                        record_history(it)
+                    quote_cache[c.lower()] = (ts, got.get(c.lower()))
                 diag["quote_err"] = ""
                 diag["quote_ms"] = int((time.time() - started) * 1000)
                 if i + CHUNK < len(need):
@@ -381,39 +420,10 @@ def get_quotes(codes):
     for c in codes:
         ent = quote_cache.get(c.lower())
         if ent and ent[1]:
-            out.append(ent[1])
+            out.append(decorate(ent[1]))
     if last_err and not out:
         raise last_err
     return out
-
-
-# ---------------------------------------------------------------- 背景記錄走勢
-def touch(codes, pinned=False):
-    now = time.time()
-    with watch_lock:
-        for c in codes:
-            old = watch.get(c)
-            watch[c] = (now, pinned or bool(old and old[1]))
-
-
-def poll_loop():
-    while True:
-        time.sleep(5)
-        try:
-            if not market_open():
-                continue
-            now = time.time()
-            with watch_lock:
-                for c, v in list(watch.items()):
-                    if now - v[0] > 86400:
-                        del watch[c]
-                items = [(c, v) for c, v in watch.items() if v[1] or now - v[0] < 1800]
-                items.sort(key=lambda kv: -kv[1][0])
-                codes = [c for c, _ in items[:MAX_POLL]]
-            if codes:
-                get_quotes(codes)
-        except Exception:
-            pass
 
 
 _started = False
@@ -425,7 +435,6 @@ def start_background():
         return
     _started = True
     threading.Thread(target=meta_loop, daemon=True).start()
-    threading.Thread(target=poll_loop, daemon=True).start()
 
 
 start_background()
@@ -469,17 +478,14 @@ def api_quotes():
         if request.method == "POST":
             body = request.get_json(silent=True) or {}
             codes = parse_codes(body.get("codes", []))
-            pin = bool(body.get("pin"))
         else:
             codes = parse_codes(request.args.get("codes", "").split(","))
-            pin = request.args.get("pin") == "1"
     except ValueError as e:
         return reply({"ok": False, "error": str(e)}, 400)
     if not codes:
         return reply({"ok": True, "items": [], "missing": []})
     if len(codes) > MAX_CODES:
         return reply({"ok": False, "error": f"一次最多 {MAX_CODES} 檔"}, 400)
-    touch(codes, pin)
     try:
         items = get_quotes(codes)
     except Exception as e:
@@ -489,32 +495,19 @@ def api_quotes():
     return reply({"ok": True, "items": items, "missing": missing})
 
 
-@app.get("/api/series")
-def api_series():
-    try:
-        codes = parse_codes(request.args.get("codes", "").split(","))
-    except ValueError as e:
-        return reply({"ok": False, "error": str(e)}, 400)
-    out = {}
-    for c in codes[:100]:
-        s = series_for(c)
-        if s:
-            out[c] = s
-    return reply({"ok": True, "series": out})
-
-
 @app.get("/api/diag")
 def api_diag():
     return reply({
         "server_time": tw_now().strftime("%Y-%m-%d %H:%M:%S"),
-        "market_open": market_open(),
         "meta_ok": meta_state["ok"],
+        "meta_status": diag["meta_status"],
         "meta_count": len(meta),
+        "price_count": diag["prices"],
+        "leader_count": diag["leaders"],
         "meta_err": diag["meta_err"],
         "quote_err": diag["quote_err"],
         "last_fetch_ms": diag["quote_ms"],
         "cached_quotes": len(quote_cache),
-        "watching": len(watch),
     })
 
 
