@@ -62,6 +62,7 @@ IND_NAMES = {
     "29": "電子通路業", "30": "資訊服務業", "31": "其他電子業",
     "32": "文化創意業", "33": "農業科技業", "34": "電子商務",
     "35": "綠能環保", "36": "數位雲端", "37": "運動休閒", "38": "居家生活",
+    "91": "存託憑證",
 }
 
 
@@ -103,8 +104,11 @@ def load_companies_file():
         new = {}
         for code, v in comp.items():
             name, ind, ex, shares = v
-            new[code.upper()] = {"n": name, "ind": ind, "indname": ind, "ex": ex, "shares": shares}
-        found = dict(data.get("leaders") or {})
+            ind = str(ind)
+            indname = IND_NAMES.get(ind.zfill(2), ind) if ind.isdigit() else ind
+            new[code.upper()] = {"n": name, "ind": indname, "indname": indname, "ex": ex, "shares": shares}
+        found = {(IND_NAMES.get(k.zfill(2), k) if k.isdigit() else k): v
+                 for k, v in (data.get("leaders") or {}).items()}
     except Exception as e:
         diag["meta_status"] = f"companies.json 讀取失敗：{type(e).__name__}"
         return False
