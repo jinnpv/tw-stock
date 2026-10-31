@@ -12,13 +12,13 @@
 <style>
 :root{
   --bg:#EEF1F4; --sheet:#FFFFFF; --ink:#16222E; --muted:#68757F; --line:#DCE2E8;
-  --accent:#2457D6; --up:#D4332C; --down:#0F8F5D; --grid:#E3E8ED;
+  --accent:#2457D6; --up:#D4332C; --down:#0F8F5D;
   --hdr:calc(env(safe-area-inset-top) + 52px);
 }
 @media (prefers-color-scheme: dark){
   :root{
     --bg:#0E151C; --sheet:#141D26; --ink:#E8EDF2; --muted:#8C99A5; --line:#25313D;
-    --accent:#7FA2FF; --up:#FF6B63; --down:#3CC48A; --grid:#232F3B;
+    --accent:#7FA2FF; --up:#FF6B63; --down:#3CC48A;
   }
 }
 *{box-sizing:border-box}
@@ -29,7 +29,7 @@ body{
   font:15px/1.5 "Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
 }
 button{font:inherit; color:inherit}
-button:focus-visible,input:focus-visible,.cell:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
+button:focus-visible,input:focus-visible,.card:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
 
 header{
   position:sticky; top:0; z-index:6; background:var(--bg); height:var(--hdr);
@@ -78,35 +78,39 @@ input::placeholder{color:var(--muted)}
 .notice{margin:0 12px 8px; font-size:13px; color:var(--up)}
 .notice:empty{display:none}
 
-.sheet{background:var(--sheet); border-top:1px solid var(--line); border-bottom:1px solid var(--line)}
-.row{border-bottom:1px solid var(--line)}
-.row:last-child{border-bottom:0}
-.cell{
-  display:grid; grid-template-columns:minmax(0,1.08fr) minmax(0,1fr); gap:8px;
-  padding:10px 10px 10px 12px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+/* 一排兩檔 */
+.grid{
+  display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); grid-auto-flow:row dense;
+  gap:1px; background:var(--line);
+  border-top:1px solid var(--line); border-bottom:1px solid var(--line);
 }
-.l{min-width:0; overflow:hidden; display:flex; flex-direction:column; justify-content:space-between; gap:4px}
-.nm{display:flex; align-items:baseline; gap:6px; min-width:0}
-.nm .n{font-weight:700; font-size:15.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
-.nm .c{font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; flex:none}
-.pc{display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-end; gap:4px 6px}
-.px{font:600 24px/1 "IBM Plex Sans","Noto Sans TC",system-ui,sans-serif; font-variant-numeric:tabular-nums; letter-spacing:-.01em}
-.chg{text-align:right; font-size:12.5px; line-height:1.3; font-variant-numeric:tabular-nums; flex:none}
-.vol{display:flex; gap:5px; align-items:baseline; font-size:12.5px; color:var(--muted); font-variant-numeric:tabular-nums; white-space:nowrap}
-.vol b{font-weight:500; color:var(--ink); margin-right:5px}
-.vol b.up{color:var(--up)} .vol b.down{color:var(--down)}
+.card{
+  background:var(--sheet); padding:10px 10px 10px 12px; min-width:0; cursor:pointer;
+  display:flex; flex-direction:column; gap:3px; -webkit-tap-highlight-color:transparent;
+}
+.card[aria-expanded="true"]{box-shadow:inset 0 -2px 0 var(--accent)}
+.top{display:flex; align-items:center; gap:6px; min-width:0}
+.n{font-weight:700; font-size:15.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0}
+.lead{
+  flex:none; font-size:10.5px; line-height:1; padding:3px 4px; border-radius:4px;
+  color:var(--accent); border:1px solid var(--accent); font-weight:500;
+}
+.sub{display:flex; gap:6px; min-width:0; font-size:12px; color:var(--muted)}
+.sub .c{flex:none; font-variant-numeric:tabular-nums}
+.sub .i{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0}
+.mid{display:flex; justify-content:space-between; align-items:center; gap:6px; margin-top:4px}
+.px{font:600 24px/1.05 "IBM Plex Sans","Noto Sans TC",system-ui,sans-serif; font-variant-numeric:tabular-nums; letter-spacing:-.01em; min-width:0}
+.px.sm{font-size:19px}
+.chg{font-size:12.5px; line-height:1.3; font-variant-numeric:tabular-nums}
 .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--muted)}
-.r{min-width:0; display:flex; align-items:stretch}
-.spark{width:100%; height:92px; display:block; overflow:hidden}
-.spark .grid{stroke:var(--grid); stroke-width:1; vector-effect:non-scaling-stroke}
-.spark .base{stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; vector-effect:non-scaling-stroke; opacity:.7}
-.spark .ln{fill:none; stroke-width:1.4; vector-effect:non-scaling-stroke; stroke-linejoin:round}
-.spark .ln.up{stroke:var(--up)} .spark .ln.down{stroke:var(--down)} .spark .ln.flat{stroke:var(--muted)}
-.spark .area{opacity:.2}
-.spark .area.up{fill:var(--up)} .spark .area.down{fill:var(--down)} .spark .area.flat{fill:var(--muted)}
-.hint{align-self:center; width:100%; text-align:center; font-size:12px; color:var(--muted)}
+.candle{flex:none; width:26px; height:62px; display:block; overflow:visible}
+.candle .base{stroke:var(--muted); stroke-width:1; stroke-dasharray:2 2; opacity:.8}
+.candle .wick{stroke-width:1.6}
+.candle .wick.up{stroke:var(--up)} .candle .wick.down{stroke:var(--down)} .candle .wick.flat{stroke:var(--muted)}
+.candle .body.up{fill:var(--up)} .candle .body.down{fill:var(--down)} .candle .body.flat{fill:var(--muted)}
+.hold{color:var(--muted); font-size:13px; padding:6px 0}
 
-.detail{padding:0 12px 14px}
+.detail{grid-column:1 / -1; background:var(--sheet); padding:4px 12px 14px}
 .facts{display:grid; grid-template-columns:repeat(3,1fr); gap:6px 10px; margin:0 0 12px; font-size:13px; font-variant-numeric:tabular-nums}
 .facts div{display:flex; flex-direction:column}
 .facts dt{color:var(--muted); font-size:12px}
@@ -119,8 +123,8 @@ input::placeholder{color:var(--muted)}
 .act{margin-top:12px; background:none; border:0; padding:6px 0; color:var(--accent); font-size:13.5px; text-decoration:underline; cursor:pointer}
 .act.rm{color:var(--muted)}
 .more{display:block; width:calc(100% - 24px); margin:12px; height:42px; border:1px solid var(--line); border-radius:8px; background:var(--sheet); cursor:pointer}
-.empty{padding:28px 16px; color:var(--muted); text-align:center}
-.loading{padding:14px 12px; color:var(--muted); font-size:13px}
+.empty{grid-column:1 / -1; background:var(--sheet); padding:28px 16px; color:var(--muted); text-align:center}
+.foot{margin:12px 12px 0; font-size:12px; color:var(--muted)}
 </style>
 </head>
 <body>
@@ -140,8 +144,9 @@ input::placeholder{color:var(--muted)}
       <button class="add" type="submit">加入</button>
     </form>
     <p class="notice" id="notice" role="status"></p>
-    <main class="sheet" id="list"></main>
+    <main class="grid" id="list"></main>
     <button class="more" id="more" type="button" hidden>顯示更多</button>
+    <p class="foot">K 棒是今天的日 K：實體為開盤到目前成交價，細線為最高最低，虛線為昨收。「龍頭」是同產業市值最大的公司（發行股數 × 最近收盤價）。</p>
   </div>
 </div>
 
@@ -165,7 +170,7 @@ input::placeholder{color:var(--muted)}
   let list = loadList();
   let view = loadView();
   let groups = {concept: [], industry: [], ready: false};
-  let quotes = {}, seriesStore = {};
+  let quotes = {};
   let missing = new Set();
   const open = new Set();
   let shown = PAGE;
@@ -220,15 +225,10 @@ input::placeholder{color:var(--muted)}
   const allGroups = () => groups.concept.concat(groups.industry);
   const groupById = id => allGroups().find(g => g.id === id);
   function inWatch() { return view === 'watch' || !groupById(view); }
-
-  function viewCodes() {
-    if (inWatch()) return list;
-    return groupById(view).codes;
-  }
+  function viewCodes() { return inWatch() ? list : groupById(view).codes; }
   function visible() {
     if (inWatch()) return list.slice();
-    const g = groupById(view);
-    const rows = g.codes.filter(c => !missing.has(key(c)));
+    const rows = groupById(view).codes.filter(c => !missing.has(key(c)));
     rows.sort((a, b) => {
       const qa = quotes[key(a)], qb = quotes[key(b)];
       const pa = qa && qa.pct != null ? qa.pct : -1e9, pb = qb && qb.pct != null ? qb.pct : -1e9;
@@ -237,54 +237,26 @@ input::placeholder{color:var(--muted)}
     return rows.slice(0, shown);
   }
 
-  /* ---------- 走勢小圖 ---------- */
-  function minuteIdx(t) {
-    const p = (t || '').split(':').map(Number);
-    if (p.length < 2 || p.some(isNaN)) return null;
-    return Math.max(0, Math.min(270, p[0] * 60 + p[1] - 540));
-  }
-  function seriesFor(q) {
-    const s = seriesStore[key(q.code)];
-    const arr = s && s.d === q.date ? s.p.slice() : [];
-    const idx = minuteIdx(q.time);
-    if (q.price != null && idx != null && idx >= arr.length - 1) {
-      while (arr.length < idx) arr.push(arr.length ? arr[arr.length - 1] : null);
-      arr[idx] = q.price;
-    }
-    return arr;
-  }
-  function chart(q, d) {
-    const W = 270, H = 92;
-    const svg = sv('svg', {viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', class: 'spark', 'aria-hidden': 'true'});
-    [60, 120, 180, 240].forEach(x => svg.append(sv('line', {x1: x, y1: 0, x2: x, y2: H, class: 'grid'})));
-    const pts = [];
-    seriesFor(q).forEach((p, i) => { if (p != null) pts.push([i, p]); });
-    if (pts.length < 2 || q.prev == null) return svg;
-    const vals = pts.map(p => p[1]).concat(q.prev);
-    let lo = Math.min(...vals), hi = Math.max(...vals);
-    const minSpan = q.prev * 0.01;
-    if (hi - lo < minSpan) { const mid = (hi + lo) / 2; lo = mid - minSpan / 2; hi = mid + minSpan / 2; }
-    const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
-    const y = v => (H - ((v - lo) / (hi - lo)) * H).toFixed(1);
-    const yb = y(q.prev);
-    svg.append(sv('line', {x1: 0, y1: yb, x2: W, y2: yb, class: 'base'}));
-    const line = pts.map(([i, p]) => `${i},${y(p)}`).join(' ');
-    svg.append(sv('polygon', {points: `${pts[0][0]},${yb} ${line} ${pts[pts.length - 1][0]},${yb}`, class: 'area ' + d}));
-    svg.append(sv('polyline', {points: line, class: 'ln ' + d}));
+  /* ---------- 今日 K 棒 ---------- */
+  function candle(q) {
+    const W = 26, H = 62;
+    const svg = sv('svg', {viewBox: `0 0 ${W} ${H}`, class: 'candle', 'aria-hidden': 'true'});
+    if (q.open == null || q.high == null || q.low == null || q.price == null) return svg;
+    let lo = Math.min(q.low, q.prev != null ? q.prev : q.low);
+    let hi = Math.max(q.high, q.prev != null ? q.prev : q.high);
+    if (hi - lo < 1e-9) { lo -= 0.5; hi += 0.5; }
+    const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+    const y = v => (H - ((v - lo) / (hi - lo)) * H);
+    const cls = q.price > q.open ? 'up' : q.price < q.open ? 'down' : 'flat';
+    if (q.prev != null) svg.append(sv('line', {x1: 0, x2: W, y1: y(q.prev), y2: y(q.prev), class: 'base'}));
+    svg.append(sv('line', {x1: 13, x2: 13, y1: y(q.high), y2: y(q.low), class: 'wick ' + cls}));
+    const top = Math.min(y(q.open), y(q.price));
+    const hgt = Math.max(2, Math.abs(y(q.open) - y(q.price)));
+    svg.append(sv('rect', {x: 6, width: 14, y: top, height: hgt, rx: 1, class: 'body ' + cls}));
     return svg;
   }
 
-  /* ---------- 列 ---------- */
-  function volLine(q) {
-    const v = h('div', 'vol');
-    if (q.code.toLowerCase() === 't00') return v;
-    v.append(h('span', null, '單'));
-    v.append(h('b', q.side === 'out' ? 'up' : q.side === 'in' ? 'down' : '', int(q.lastq)));
-    v.append(h('span', null, '總'));
-    v.append(h('b', '', int(q.vol)));
-    return v;
-  }
-
+  /* ---------- 卡片 ---------- */
   function actionBtn(code) {
     const k = key(code);
     const inList = list.some(c => key(c) === k);
@@ -310,9 +282,11 @@ input::placeholder{color:var(--muted)}
   function detail(q, code) {
     const box = h('div', 'detail');
     const facts = h('dl', 'facts');
-    [['昨收', q.prev], ['開', q.open], ['高', q.high], ['低', q.low], ['漲停', q.up], ['跌停', q.down]].forEach(([k, v]) => {
+    [['昨收', px(q.prev, q.code)], ['開', px(q.open, q.code)], ['高', px(q.high, q.code)],
+     ['低', px(q.low, q.code)], ['漲停', px(q.up, q.code)], ['跌停', px(q.down, q.code)],
+     ['成交量', q.code.toLowerCase() === 't00' ? '—' : int(q.vol) + ' 張'], ['市場', q.market || '—']].forEach(([k, v]) => {
       const d = h('div');
-      d.append(h('dt', null, k), h('dd', null, px(v, q.code)));
+      d.append(h('dt', null, k), h('dd', null, v));
       facts.append(d);
     });
     box.append(facts);
@@ -335,46 +309,47 @@ input::placeholder{color:var(--muted)}
     return box;
   }
 
-  function rowEl(code) {
+  function cardEl(code) {
     const k = key(code);
     const q = quotes[k];
-    const row = h('div', 'row');
+    const card = h('div', 'card');
     if (!q) {
       const bad = missing.has(k);
-      row.append(h('div', 'loading', `${code}　${bad ? '找不到這個代號' : '讀取中…'}`));
-      if (bad && inWatch()) { const w = h('div', 'detail'); w.append(actionBtn(code)); row.append(w); }
-      return row;
+      const top = h('div', 'top'); top.append(h('span', 'n', code));
+      card.append(top, h('div', 'hold', bad ? '找不到這個代號' : '讀取中…'));
+      if (bad && inWatch()) card.append(actionBtn(code));
+      return [card];
     }
     const d = dir(q.change || 0);
-    const cell = h('div', 'cell');
-    cell.setAttribute('role', 'button');
-    cell.tabIndex = 0;
-    cell.setAttribute('aria-expanded', open.has(k));
+    card.setAttribute('role', 'button');
+    card.tabIndex = 0;
+    card.setAttribute('aria-expanded', open.has(k));
     const toggle = () => { open.has(k) ? open.delete(k) : open.add(k); render(); };
-    cell.addEventListener('click', toggle);
-    cell.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    card.addEventListener('click', toggle);
+    card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
 
-    const l = h('div', 'l');
-    const nm = h('div', 'nm');
-    nm.append(h('span', 'n', q.name), h('span', 'c', q.code));
-    const pc = h('div', 'pc');
-    pc.append(h('div', 'px ' + d, px(q.price, q.code)));
-    const chg = h('div', 'chg ' + d);
-    if (q.change == null) chg.append(h('div', null, '尚無成交'));
-    else {
-      chg.append(h('div', null, sgn(q.change) + p2(Math.abs(q.change))));
-      chg.append(h('div', null, `(${Math.abs(q.pct).toFixed(2)}%)`));
-    }
-    pc.append(chg);
-    l.append(nm, pc, volLine(q));
+    const top = h('div', 'top');
+    top.append(h('span', 'n', q.name));
+    if (q.leader) top.append(h('span', 'lead', '龍頭'));
 
-    const r = h('div', 'r');
-    const svg = chart(q, d);
-    r.append(svg);
-    cell.append(l, r);
-    row.append(cell);
-    if (open.has(k)) row.append(detail(q, code));
-    return row;
+    const sub = h('div', 'sub');
+    sub.append(h('span', 'c', q.code));
+    if (q.industry) sub.append(h('span', 'i', q.industry));
+
+    const mid = h('div', 'mid');
+    const left = h('div');
+    const pxText = px(q.price, q.code);
+    left.append(h('div', 'px ' + d + (pxText.length > 6 ? ' sm' : ''), pxText));
+    mid.append(left, candle(q));
+
+    const chg = h('div', 'chg ' + d,
+      q.change == null ? '尚無成交'
+        : `${sgn(q.change)}${p2(Math.abs(q.change))} (${Math.abs(q.pct).toFixed(2)}%)`);
+
+    card.append(top, sub, mid, chg);
+    const out = [card];
+    if (open.has(k)) out.push(detail(q, code));
+    return out;
   }
 
   /* ---------- 側欄 ---------- */
@@ -424,9 +399,8 @@ input::placeholder{color:var(--muted)}
     }
     const rows = visible();
     if (!rows.length) root.append(h('div', 'empty', watchMode ? '清單是空的，輸入股票代號就能加入。' : '這個分類目前沒有資料。'));
-    rows.forEach(c => root.append(rowEl(c)));
-    const more = $('#more');
-    more.hidden = watchMode || shown >= groupById(view).codes.length;
+    rows.forEach(c => cardEl(c).forEach(el => root.append(el)));
+    $('#more').hidden = watchMode || shown >= groupById(view).codes.length;
 
     const live = isOpen();
     $('#status').classList.toggle('live', live);
@@ -436,7 +410,7 @@ input::placeholder{color:var(--muted)}
   }
 
   /* ---------- 抓資料 ---------- */
-  let busy = null, again = false, timer = null, seriesAt = 0, seriesSig = '';
+  let busy = null, again = false, timer = null;
 
   async function doFetch() {
     const codes = viewCodes();
@@ -447,7 +421,7 @@ input::placeholder{color:var(--muted)}
       const r = await fetch('/api/quotes', {
         method: 'POST', cache: 'no-store', signal: ctl.signal,
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({codes, pin: inWatch()})
+        body: JSON.stringify({codes})
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || '發生錯誤');
@@ -465,19 +439,6 @@ input::placeholder{color:var(--muted)}
       else err = '連線失敗：' + e.message + '，稍後自動重試';
     } finally { clearTimeout(to); }
     render();
-    maybeSeries();
-  }
-
-  function maybeSeries() {
-    const codes = visible();
-    const sig = codes.join(',');
-    if (!codes.length) return;
-    if (sig === seriesSig && Date.now() - seriesAt < 30000) return;
-    seriesSig = sig; seriesAt = Date.now();
-    fetch('/api/series?codes=' + encodeURIComponent(sig), {cache: 'no-store'})
-      .then(r => r.json())
-      .then(j => { if (j.ok) { Object.entries(j.series).forEach(([c, s]) => seriesStore[key(c)] = s); render(); } })
-      .catch(() => {});
   }
 
   function refresh() {
@@ -500,10 +461,11 @@ input::placeholder{color:var(--muted)}
       const j = await r.json();
       if (j.ok) {
         groups = {concept: j.concept, industry: j.industry, ready: j.ready};
+        if (view !== 'watch' && !groupById(view) && (j.ready || tries >= 8)) { view = 'watch'; saveView(); }
         renderSide(); render();
-        if (view !== 'watch' && !groupById(view)) { /* 已不存在的分類，退回自選 */ view = 'watch'; saveView(); renderSide(); render(); }
-        else if (view !== 'watch') refresh();
-        if (!j.ready && tries < 8) setTimeout(() => loadGroups(tries + 1), 8000);
+        if (view !== 'watch' && groupById(view)) refresh();
+        if (!j.ready && tries < 12) setTimeout(() => loadGroups(tries + 1), 10000);
+        else if (j.ready) refresh();   // 產業與龍頭資料到了，重抓一次報價帶上標記
       }
     } catch (e) {
       if (tries < 4) setTimeout(() => loadGroups(tries + 1), 8000);
@@ -523,7 +485,7 @@ input::placeholder{color:var(--muted)}
     notice('');
     list.push(v); saveList(); render(); refresh();
   });
-  $('#more').addEventListener('click', () => { shown += PAGE; render(); maybeSeries(); });
+  $('#more').addEventListener('click', () => { shown += PAGE; render(); });
   $('#status').addEventListener('click', () => refresh());
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 
