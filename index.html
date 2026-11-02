@@ -145,6 +145,22 @@ input::placeholder{color:var(--muted)}
 .more{display:block; width:calc(100% - 24px); margin:12px; height:42px; border:1px solid var(--line); border-radius:8px; background:var(--sheet); cursor:pointer}
 .empty{grid-column:1 / -1; background:var(--sheet); padding:28px 16px; color:var(--muted); text-align:center}
 .foot{margin:12px 12px 0; font-size:12px; color:var(--muted)}
+.bar button{font-size:14.5px}
+.seg{display:flex; margin:2px 0 8px}
+.seg button{flex:1; height:32px; background:none; border:1px solid var(--line); color:var(--muted); font-size:13px; cursor:pointer}
+.seg button:first-child{border-radius:8px 0 0 8px}
+.seg button:last-child{border-radius:0 8px 8px 0; border-left:0}
+.seg button[aria-pressed="true"]{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:700}
+@media (prefers-color-scheme: dark){ .seg button[aria-pressed="true"]{color:#0E151C} }
+.kchart .xmark{fill:var(--up); stroke:var(--sheet); stroke-width:1.2}
+.scan{margin:0; padding:0 12px 10px; font-size:12.5px; line-height:1.6; color:var(--muted)}
+.xmini{display:block; width:100%; height:auto; margin-top:4px}
+.xmini .xp{fill:none; stroke:var(--muted); stroke-width:1; opacity:.75}
+.xmini .x5{fill:none; stroke:var(--ma5); stroke-width:1.4}
+.xmini .x20{fill:none; stroke:var(--accent); stroke-width:1.4}
+.xmini .xdot{fill:var(--up); stroke:var(--sheet); stroke-width:1.5}
+.xinfo{font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums}
+.xinfo b{color:var(--up); font-weight:500}
 </style>
 </head>
 <body>
@@ -156,8 +172,9 @@ input::placeholder{color:var(--muted)}
 </header>
 
 <div class="main">
-  <p class="hint" id="hint">點下方的「自選」「產業別」或「概念族群」<br>展開來看個股</p>
+  <p class="hint" id="hint">點下方的「自選」「產業別」「概念族群」或「5穿20」<br>展開來看個股</p>
   <div class="vh" id="vh" hidden></div>
+  <p class="scan" id="scan" hidden></p>
   <form id="add" autocomplete="off" hidden>
     <input id="code" inputmode="text" enterkeyhint="done" placeholder="輸入代號，例如 2330" aria-label="股票代號">
     <button class="add" type="submit">加入</button>
@@ -173,6 +190,7 @@ input::placeholder{color:var(--muted)}
   <button type="button" data-tab="watch">自選</button>
   <button type="button" data-tab="industry">產業別</button>
   <button type="button" data-tab="concept">概念族群</button>
+  <button type="button" data-tab="cross">5穿20</button>
 </nav>
 
 <script>
@@ -181,7 +199,7 @@ input::placeholder{color:var(--muted)}
   const KEY = 'tw_watchlist_v1';
   const DEFAULT = ['t00', '2330', '2317'];
   const PAGE = 40;
-  const NAMES = {watch: '自選', industry: '產業別', concept: '概念族群'};
+  const NAMES = {watch: '自選', industry: '產業別', concept: '概念族群', cross: '5穿20'};
   const norm = c => c.toLowerCase() === 't00' ? 't00' : c.toUpperCase();
   const key = c => c.toLowerCase();
 
@@ -196,7 +214,8 @@ input::placeholder{color:var(--muted)}
   let group = null;          // 目前點開的產業／族群 id
   let groups = {concept: [], industry: [], ready: false};
   let groupTries = 0;
-  let quotes = {}, kline = {}, scrub = {};
+  let quotes = {}, kline = {}, k5 = {}, kmode = {}, scrub = {};
+  let scanState = null, scanErr = '', scanTimer = null;
   let missing = new Set();
   const open = new Set();
   let shown = PAGE;
@@ -250,14 +269,17 @@ input::placeholder{color:var(--muted)}
   /* ---------- 目前檢視 ---------- */
   const groupSet = () => tab === 'industry' ? groups.industry : tab === 'concept' ? groups.concept : [];
   const curGroup = () => group ? groupSet().find(g => g.id === group) : null;
-  const showingStocks = () => tab === 'watch' || (tab && curGroup());
+  const showingStocks = () => tab === 'watch' || tab === 'cross' || (tab && curGroup());
+  const hitList = () => (scanState && scanState.hits) || [];
   function viewCodes() {
     if (tab === 'watch') return list;
+    if (tab === 'cross') return hitList().map(x => x.code);
     const g = curGroup();
     return g ? g.codes : [];
   }
   function visible() {
     if (tab === 'watch') return list.slice();
+    if (tab === 'cross') return hitList().map(x => x.code);
     const g = curGroup();
     if (!g) return [];
     const rows = g.codes.filter(c => !missing.has(key(c)));
@@ -269,6 +291,26 @@ input::placeholder{color:var(--muted)}
     return rows.slice(0, shown);
   }
   function indInfo(q) { return q.industry ? {industry: q.industry, leader: !!q.leader} : {}; }
+
+  /* ---------- 5穿20 迷你圖 ---------- */
+  function crossChart(hit) {
+    const W = 180, H = 56, SLOTS = 54;
+    const svg = sv('svg', {viewBox: `0 0 ${W} ${H}`, class: 'xmini', 'aria-hidden': 'true'});
+    const vals = [].concat(hit.c, hit.m5, hit.m20).filter(v => v != null);
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    if (hi - lo < 1e-9) { hi += 0.5; lo -= 0.5; }
+    const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+    const X = i => i / (SLOTS - 1) * W, Y = v => H - (v - lo) / (hi - lo) * H;
+    const line = (arr, c) => {
+      const pts = [];
+      arr.forEach((v, i) => { if (v != null) pts.push(`${X(i).toFixed(1)},${Y(v).toFixed(1)}`); });
+      if (pts.length > 1) svg.append(sv('polyline', {points: pts.join(' '), class: c}));
+    };
+    line(hit.c, 'xp'); line(hit.m20, 'x20'); line(hit.m5, 'x5');
+    const v = hit.m5[hit.idx];
+    if (v != null) svg.append(sv('circle', {cx: X(hit.idx), cy: Y(v), r: 3.6, class: 'xdot'}));
+    return svg;
+  }
 
   /* ---------- 卡片上的今日 K 棒 ---------- */
   function candle(q) {
@@ -312,22 +354,53 @@ input::placeholder{color:var(--muted)}
     });
   }
 
+  const getMode = code => kmode[key(code)] || (tab === 'cross' ? 'min5' : 'day');
+
+  function segEl(code) {
+    const mode = getMode(code);
+    const seg = h('div', 'seg');
+    [['day', '日K'], ['min5', '5分K']].forEach(([m, label]) => {
+      const b = h('button', null, label);
+      b.type = 'button';
+      b.setAttribute('aria-pressed', String(mode === m));
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        kmode[key(code)] = m;
+        if (m === 'min5') ensureK5(code, true); else ensureKline(code);
+        render();
+      });
+      seg.append(b);
+    });
+    return seg;
+  }
+
   function kBlock(code, q) {
     const wrap = h('div', 'kwrap');
-    const st = kline[key(code)];
-    const rows = mergedRows(code, q);
+    wrap.append(segEl(code));
+    const mode = getMode(code);
     const info = h('div', 'kinfo');
     wrap.append(info);
 
+    let rows, st;
+    if (mode === 'min5') { st = k5[key(code)]; rows = st && st.rows ? st.rows : []; }
+    else { st = kline[key(code)]; rows = mergedRows(code, q); }
+    const what = mode === 'min5' ? '5分K' : '日K';
+
     if (!rows.length) {
-      wrap.append(h('div', 'kmsg', !st || st.state === 'loading' ? '日K載入中…' : '日K載入失敗：' + (st.msg || '原因不明')));
+      wrap.append(h('div', 'kmsg', !st || st.state === 'loading' ? what + '載入中…' : what + '載入失敗：' + (st.msg || '原因不明')));
       return wrap;
     }
 
-    const N = Math.min(rows.length, 60);
     const all = rows;
     const closes = all.map(r => r[4]);
     const m5 = ma(closes, 5), m20 = ma(closes, 20);
+    let N;
+    if (mode === 'min5') {
+      const lastDay = all[all.length - 1][0].slice(0, 10);
+      let cnt = 0;
+      for (let i = all.length - 1; i >= 0 && all[i][0].slice(0, 10) === lastDay; i--) cnt++;
+      N = Math.min(all.length, Math.max(cnt, 40), 108);
+    } else N = Math.min(all.length, 60);
     const off = all.length - N;
     const view = all.slice(off);
 
@@ -342,19 +415,25 @@ input::placeholder{color:var(--muted)}
     const X = i => i * step + step / 2;
     const cls = r => r[4] > r[1] ? 'up' : r[4] < r[1] ? 'down' : 'flat';
 
-    const svg = sv('svg', {viewBox: `0 0 ${W} ${H}`, class: 'kchart', 'aria-label': '日K走勢圖'});
+    const svg = sv('svg', {viewBox: `0 0 ${W} ${H}`, class: 'kchart', 'aria-label': what + '走勢圖'});
     [hi - pad, (hi + lo) / 2, lo + pad].forEach(v => {
       svg.append(sv('line', {x1: 0, x2: W - PR, y1: y(v), y2: y(v), class: 'grid'}));
       const t = sv('text', {x: W - 2, y: y(v) + 3.5, 'text-anchor': 'end'});
       t.textContent = v >= 100 ? v.toFixed(0) : v.toFixed(2);
       svg.append(t);
     });
-    // 月份刻度
     view.forEach((r, i) => {
-      if (i > 0 && r[0].slice(5, 7) !== view[i - 1][0].slice(5, 7)) {
+      if (i === 0) return;
+      const pr = view[i - 1];
+      let label = null;
+      if (mode === 'min5') {
+        if (r[0].slice(0, 10) !== pr[0].slice(0, 10)) label = r[0].slice(5, 10).replace('-', '/');
+        else if (r[0].slice(11, 13) !== pr[0].slice(11, 13)) label = r[0].slice(11, 13) + ':00';
+      } else if (r[0].slice(5, 7) !== pr[0].slice(5, 7)) label = (+r[0].slice(5, 7)) + '月';
+      if (label) {
         svg.append(sv('line', {x1: X(i) - step / 2, x2: X(i) - step / 2, y1: PT, y2: VB, class: 'grid'}));
         const t = sv('text', {x: X(i) - step / 2 + 2, y: VB + 13});
-        t.textContent = +r[0].slice(5, 7) + '月';
+        t.textContent = label;
         svg.append(t);
       }
     });
@@ -371,11 +450,20 @@ input::placeholder{color:var(--muted)}
       arr.slice(off).forEach((v, i) => { if (v != null) pts.push(`${X(i).toFixed(1)},${y(v).toFixed(1)}`); });
       if (pts.length > 1) svg.append(sv('polyline', {points: pts.join(' '), class: 'ma ' + c}));
     });
+    if (mode === 'min5') {   // 5MA 由下往上穿過 20MA 的位置打一個圓點
+      view.forEach((r, i) => {
+        const g = off + i;
+        if (g >= 1 && m5[g] != null && m20[g] != null && m5[g - 1] != null && m20[g - 1] != null
+            && m5[g - 1] <= m20[g - 1] && m5[g] > m20[g]) {
+          svg.append(sv('circle', {cx: X(i), cy: y(m5[g]), r: 3.4, class: 'xmark'}));
+        }
+      });
+    }
     const cross = sv('line', {x1: 0, x2: 0, y1: PT, y2: VB, class: 'cross'});
     cross.setAttribute('visibility', 'hidden');
     svg.append(cross);
 
-    const k = key(code);
+    const k = key(code) + ':' + mode;
     function showBar(i, fromUser) {
       i = Math.max(0, Math.min(N - 1, i));
       const r = view[i], prev = all[off + i - 1];
@@ -383,8 +471,7 @@ input::placeholder{color:var(--muted)}
       const c = d == null ? 'flat' : dir(d);
       info.textContent = '';
       info.append(h('b', null, r[0]));
-      const l1 = h('span', null, `　開 ${px(r[1])}　高 ${px(r[2])}　低 ${px(r[3])}　收 `);
-      info.append(l1, h('b', c, px(r[4])));
+      info.append(h('span', null, `　開 ${px(r[1])}　高 ${px(r[2])}　低 ${px(r[3])}　收 `), h('b', c, px(r[4])));
       if (d != null) info.append(h('span', c, `　${sgn(d)}${p2(Math.abs(d))} (${Math.abs(d / prev[4] * 100).toFixed(2)}%)`));
       info.append(h('span', null, `　量 ${int(r[5])} 張`));
       if (fromUser) {
@@ -402,18 +489,35 @@ input::placeholder{color:var(--muted)}
     svg.addEventListener('pointermove', onMove);
     svg.addEventListener('click', e => e.stopPropagation());
     const keep = scrub[k];
-    if (keep != null && keep < N) {
-      showBar(keep, true);
-    } else showBar(N - 1, false);
+    if (keep != null && keep < N) showBar(keep, true); else showBar(N - 1, false);
     wrap.append(svg);
 
     const lg = h('div', 'klegend');
     const a = h('span'); const ai = h('i'); ai.style.background = 'var(--ma5)'; a.append(ai, 'MA5');
     const b = h('span'); const bi = h('i'); bi.style.background = 'var(--accent)'; b.append(bi, 'MA20');
-    lg.append(a, b, h('span', null, `近 ${N} 個交易日　下方為成交量`));
+    lg.append(a, b, h('span', null, mode === 'min5' ? `近 ${N} 根 5 分K　紅點＝5MA 上穿 20MA` : `近 ${N} 個交易日　下方為成交量`));
     wrap.append(lg);
-    if (st && st.state === 'err') wrap.append(h('div', 'kmsg', '歷史資料載入失敗（' + (st.msg || '原因不明') + '），目前只顯示今天'));
+    if (st && st.state === 'err') wrap.append(h('div', 'kmsg', '資料更新失敗（' + (st.msg || '原因不明') + '），顯示的是上一次的資料'));
     return wrap;
+  }
+
+  async function ensureK5(code, force) {
+    const k = key(code);
+    const cur = k5[k];
+    if (cur && cur.state === 'loading') return;
+    if (!force && cur && cur.state === 'ok' && Date.now() - cur.at < 60000) return;
+    const keep = cur && cur.rows ? cur.rows : null;
+    k5[k] = {state: 'loading', rows: keep};
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 30000);
+    try {
+      const r = await fetch('/api/kline5?code=' + encodeURIComponent(code), {signal: ctl.signal, cache: 'no-store'});
+      const j = await r.json();
+      k5[k] = j.ok ? {state: 'ok', rows: j.rows, at: Date.now()} : {state: 'err', msg: j.error, rows: keep};
+    } catch (e) {
+      k5[k] = {state: 'err', msg: e.name === 'AbortError' ? '逾時' : (e.message || '連線失敗'), rows: keep};
+    } finally { clearTimeout(to); }
+    render();
   }
 
   async function ensureKline(code) {
@@ -486,7 +590,7 @@ input::placeholder{color:var(--muted)}
     card.setAttribute('aria-expanded', open.has(k));
     const toggle = () => {
       if (open.has(k)) open.delete(k);
-      else { open.add(k); ensureKline(q.code); }
+      else { open.add(k); if (getMode(q.code) === 'min5') ensureK5(q.code, true); else ensureKline(q.code); }
       render();
     };
     card.addEventListener('click', toggle);
@@ -505,13 +609,21 @@ input::placeholder{color:var(--muted)}
     const left = h('div');
     const pxText = px(q.price, q.code);
     left.append(h('div', 'px ' + d + (pxText.length > 6 ? ' sm' : ''), pxText));
-    mid.append(left, candle(q));
+    const hit = tab === 'cross' ? hitList().find(x => key(x.code) === k) : null;
+    mid.append(left);
+    if (!hit) mid.append(candle(q));
 
     const chg = h('div', 'chg ' + d,
       q.change == null ? '尚無成交'
         : `${sgn(q.change)}${p2(Math.abs(q.change))} (${Math.abs(q.pct).toFixed(2)}%)`);
 
     card.append(top, sub, mid, chg);
+    if (hit) {
+      card.append(crossChart(hit));
+      const xi = h('div', 'xinfo');
+      xi.append(h('b', null, hit.time), ` 5MA 上穿 20MA　${hit.bars_ago === 0 ? '剛發生' : hit.bars_ago + ' 根前'}`);
+      card.append(xi);
+    }
     const out = [card];
     if (open.has(k)) out.push(detail(q, code));
     return out;
@@ -524,14 +636,15 @@ input::placeholder{color:var(--muted)}
     // 底部分頁
     document.querySelectorAll('#bar button').forEach(b => b.setAttribute('aria-current', String(b.dataset.tab === tab)));
 
-    const hint = $('#hint'), vh = $('#vh'), gl = $('#glist'), list_ = $('#list');
+    const hint = $('#hint'), vh = $('#vh'), gl = $('#glist'), list_ = $('#list'), scanEl = $('#scan');
     hint.hidden = tab !== null;
     vh.hidden = tab === null;
     $('#add').hidden = tab !== 'watch';
     const inGroupList = (tab === 'industry' || tab === 'concept') && !curGroup();
     gl.hidden = !inGroupList;
     list_.hidden = !showingStocks();
-    $('#foot').hidden = !showingStocks();
+    $('#foot').hidden = !showingStocks() || tab === 'cross';
+    scanEl.hidden = tab !== 'cross';
 
     vh.textContent = '';
     gl.textContent = '';
@@ -539,6 +652,18 @@ input::placeholder{color:var(--muted)}
 
     if (tab === 'watch') {
       vh.append(h('b', null, '自選'), h('span', 'sp'), h('span', null, list.length + ' 檔'));
+    } else if (tab === 'cross') {
+      vh.append(h('b', null, '5穿20'), h('span', 'sp'), h('span', null, hitList().length + ' 檔'));
+      const sc = scanState;
+      let t = '';
+      if (!sc) t = scanErr || '掃描中…';
+      else if (sc.running) t = `掃描中 ${sc.done}/${sc.total}，結果會陸續出現…`;
+      else {
+        t = `條件：最近 ${sc.lookback} 根 5 分K 內，5MA 由下往上穿過 20MA（圖中紅點）。掃描範圍：自選＋概念族群＋各產業龍頭，共 ${sc.total} 檔，資料更新 ${sc.updated || '—'}`;
+        if (sc.ok_n === 0 && sc.total) t = `5分K資料抓取失敗（${sc.errs.join('；') || '原因不明'}）`;
+        else if (sc.fail_n) t += `，其中 ${sc.fail_n} 檔抓取失敗`;
+      }
+      scanEl.textContent = t;
     } else if (inGroupList) {
       const set = groupSet();
       vh.append(h('b', null, NAMES[tab]), h('span', 'sp'), h('span', null, set.length ? set.length + (tab === 'industry' ? ' 個產業' : ' 個族群') : ''));
@@ -564,11 +689,12 @@ input::placeholder{color:var(--muted)}
 
     if (showingStocks()) {
       const rows = visible();
-      if (!rows.length) list_.append(h('div', 'empty', tab === 'watch' ? '清單是空的，輸入股票代號就能加入。' : '這個分類目前沒有資料。'));
+      if (!rows.length) list_.append(h('div', 'empty', tab === 'watch' ? '清單是空的，輸入股票代號就能加入。'
+        : tab === 'cross' ? (scanState && scanState.running ? '掃描中…' : '目前沒有符合的股票') : '這個分類目前沒有資料。'));
       rows.forEach(c => cardEl(c).forEach(el => list_.append(el)));
     }
     const g = curGroup();
-    $('#more').hidden = !(tab && tab !== 'watch' && g && shown < g.codes.length);
+    $('#more').hidden = !(tab && tab !== 'watch' && tab !== 'cross' && g && shown < g.codes.length);
 
     const live = isOpen();
     $('#status').classList.toggle('live', live);
@@ -589,7 +715,7 @@ input::placeholder{color:var(--muted)}
       const r = await fetch('/api/quotes', {
         method: 'POST', cache: 'no-store', signal: ctl.signal,
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({codes})
+        body: JSON.stringify({codes, pin: tab === 'watch'})
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || '發生錯誤');
@@ -607,6 +733,23 @@ input::placeholder{color:var(--muted)}
       else err = '連線失敗：' + e.message + '，稍後自動重試';
     } finally { clearTimeout(to); }
     render();
+    open.forEach(k => { if (getMode(k) === 'min5') ensureK5(k); });
+  }
+
+  async function pollScan() {
+    clearTimeout(scanTimer);
+    if (tab !== 'cross') return;
+    try {
+      const r = await fetch('/api/scan', {cache: 'no-store'});
+      const j = await r.json();
+      if (j.ok) {
+        const was = scanState;
+        scanState = j; scanErr = '';
+        render();
+        if (!j.running && (!was || was.running || was.updated !== j.updated)) refresh();
+      }
+    } catch (e) { scanErr = '掃描資料連線失敗，稍後重試'; render(); }
+    scanTimer = setTimeout(pollScan, scanState && scanState.running ? 3000 : 20000);
   }
 
   function refresh() {
@@ -649,6 +792,7 @@ input::placeholder{color:var(--muted)}
     } else { tab = t; group = null; }
     shown = PAGE;
     render(); window.scrollTo(0, 0); refresh();
+    if (tab === 'cross') pollScan(); else clearTimeout(scanTimer);
   }));
   $('#add').addEventListener('submit', e => {
     e.preventDefault();
