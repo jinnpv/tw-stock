@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -556,6 +557,158 @@ def get_kline(code):
     return False, "；".join(errs) or "沒有可用的資料來源"
 
 
+# ---------------------------------------------------------------- 5 分 K 與「5 穿 20」掃描
+k5_cache = {}      # code(lower) -> (ts, rows)  rows: [時間, 開, 高, 低, 收, 量(張)]
+pins = {}          # 使用者自選股（由手機回報）code -> 最後回報時間
+LOOKBACK = 6       # 最近幾根 5 分K內發生的交叉才算
+scan = {"running": False, "done": 0, "total": 0, "ok": 0, "fail": 0,
+        "updated": 0.0, "hits": [], "errs": []}
+scan_lock = threading.Lock()
+
+
+def kline5_yahoo(symbol):
+    from urllib.parse import quote
+    j = _json_from("https://query1.finance.yahoo.com/v8/finance/chart/"
+                   f"{quote(symbol)}?range=5d&interval=5m", 10)
+    res = (j.get("chart") or {}).get("result")
+    if not res:
+        raise RuntimeError("沒有資料")
+    r = res[0]
+    q = r["indicators"]["quote"][0]
+    rows = []
+    for i, t in enumerate(r.get("timestamp") or []):
+        o, h, l, c, v = q["open"][i], q["high"][i], q["low"][i], q["close"][i], q["volume"][i]
+        if None in (o, h, l, c):
+            continue
+        rows.append([datetime.fromtimestamp(t, TZ).strftime("%Y-%m-%d %H:%M"),
+                     round(o, 2), round(h, 2), round(l, 2), round(c, 2), round((v or 0) / 1000)])
+    return rows
+
+
+def get_kline5(code, ttl=45):
+    key = code.lower()
+    hit = k5_cache.get(key)
+    if hit and time.time() - hit[0] < ttl:
+        return True, hit[1]
+    c = code.upper()
+    m = meta.get(c)
+    if c == "T00":
+        syms = ["^TWII"]
+    elif m:
+        syms = [c + (".TWO" if m["ex"] == "otc" else ".TW")]
+    else:
+        syms = [c + ".TW", c + ".TWO"]
+    errs = []
+    for sym in syms:
+        try:
+            rows = kline5_yahoo(sym)
+        except Exception as e:
+            errs.append(f"{type(e).__name__} {str(e)[:50]}")
+            continue
+        if len(rows) >= 25:
+            k5_cache[key] = (time.time(), rows)
+            return True, rows
+        errs.append("資料太少")
+    if hit:
+        return True, hit[1]
+    return False, "；".join(errs) or "沒有資料"
+
+
+def _sma(vals, n):
+    out, s_ = [None] * len(vals), 0.0
+    for i, v in enumerate(vals):
+        s_ += v
+        if i >= n:
+            s_ -= vals[i - n]
+        if i >= n - 1:
+            out[i] = s_ / n
+    return out
+
+
+def detect_cross(code, rows):
+    """最近 LOOKBACK 根 5 分K內，5MA 由下往上穿過 20MA（以最新一個交易日為準）。"""
+    n = len(rows)
+    closes = [r[4] for r in rows]
+    m5, m20 = _sma(closes, 5), _sma(closes, 20)
+    day = rows[-1][0][:10]
+    first = next(j for j in range(n) if rows[j][0][:10] == day)
+    for i in range(n - 1, max(n - 1 - LOOKBACK, first), -1):
+        if None in (m5[i], m20[i], m5[i - 1], m20[i - 1]):
+            continue
+        if m5[i - 1] <= m20[i - 1] and m5[i] > m20[i]:
+            def cut(a):
+                return [None if v is None else round(v, 2) for v in a[first:]]
+            return {"code": code, "time": rows[i][0][11:16], "bars_ago": n - 1 - i,
+                    "last": rows[-1][0][11:16], "date": day, "idx": i - first,
+                    "c": cut(closes), "m5": cut(m5), "m20": cut(m20)}
+    return None
+
+
+def scan_universe():
+    codes = []
+    for g in load_concepts():
+        codes += g["codes"]
+    codes += list(leaders.values())
+    now = time.time()
+    codes += [c for c, ts in pins.items() if now - ts < 7 * 86400]
+    seen, out = set(), []
+    for c in codes:
+        c = c.upper()
+        if c not in seen and c != "T00":
+            seen.add(c)
+            out.append(c)
+    return out[:250]
+
+
+def run_scan():
+    try:
+        codes = scan_universe()
+        with scan_lock:
+            scan.update(running=True, done=0, total=len(codes), ok=0, fail=0, errs=[])
+        hits = []
+
+        def work(c):
+            try:
+                ok, data = get_kline5(c, ttl=240)
+            except Exception as e:
+                ok, data = False, f"{type(e).__name__}"
+            h = detect_cross(c, data) if ok else None
+            with scan_lock:
+                scan["done"] += 1
+                if ok:
+                    scan["ok"] += 1
+                else:
+                    scan["fail"] += 1
+                    if len(scan["errs"]) < 3:
+                        scan["errs"].append(f"{c}：{str(data)[:60]}")
+                if h:
+                    hits.append(h)
+                    if not scan["updated"]:   # 第一次掃描：結果邊掃邊出現
+                        scan["hits"] = sorted(hits, key=lambda x: (x["bars_ago"], x["code"]))
+            time.sleep(0.15)
+
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            list(ex.map(work, codes))
+        hits.sort(key=lambda h: (h["bars_ago"], h["code"]))
+        with scan_lock:
+            scan["hits"] = hits
+            scan["updated"] = time.time()
+    finally:
+        with scan_lock:
+            scan["running"] = False
+
+
+def ensure_scan():
+    with scan_lock:
+        if scan["running"]:
+            return
+        limit = 240 if market_open() else 1800
+        if scan["updated"] and time.time() - scan["updated"] < limit:
+            return
+        scan["running"] = True
+    threading.Thread(target=run_scan, daemon=True).start()
+
+
 _started = False
 
 
@@ -609,6 +762,10 @@ def api_quotes():
         if request.method == "POST":
             body = request.get_json(silent=True) or {}
             codes = parse_codes(body.get("codes", []))
+            if body.get("pin"):
+                now_ = time.time()
+                for c_ in codes:
+                    pins[c_.upper()] = now_
         else:
             codes = parse_codes(request.args.get("codes", "").split(","))
     except ValueError as e:
@@ -638,6 +795,33 @@ def api_kline():
     if ok:
         return reply({"ok": True, **payload})
     return reply({"ok": False, "error": payload}, 502)
+
+
+@app.get("/api/kline5")
+def api_kline5():
+    try:
+        codes = parse_codes([request.args.get("code", "")])
+    except ValueError as e:
+        return reply({"ok": False, "error": str(e)}, 400)
+    if not codes:
+        return reply({"ok": False, "error": "缺少代號"}, 400)
+    ok, data = get_kline5(codes[0])
+    if ok:
+        return reply({"ok": True, "rows": data})
+    return reply({"ok": False, "error": data}, 502)
+
+
+@app.get("/api/scan")
+def api_scan():
+    ensure_scan()
+    with scan_lock:
+        upd = scan["updated"]
+        return reply({
+            "ok": True, "running": scan["running"], "done": scan["done"], "total": scan["total"],
+            "ok_n": scan["ok"], "fail_n": scan["fail"], "errs": list(scan["errs"]),
+            "updated": datetime.fromtimestamp(upd, TZ).strftime("%H:%M:%S") if upd else "",
+            "lookback": LOOKBACK, "market_open": market_open(), "hits": list(scan["hits"]),
+        })
 
 
 @app.get("/api/diag")
