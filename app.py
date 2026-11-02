@@ -299,7 +299,11 @@ def build_industries():
     for name, b in sorted(buckets.items(), key=lambda kv: (kv[1]["k"], kv[0])):
         if name in ("80", "管理股票"):
             continue
-        out.append({"id": "i:" + name, "name": name, "codes": sorted(b["codes"])})
+        item = {"id": "i:" + name, "name": name, "codes": sorted(b["codes"])}
+        lead = leaders.get(name)
+        if lead and lead in meta:
+            item["leader"] = {"code": lead, "name": meta[lead].get("n", lead)}
+        out.append(item)
     ind_cache.update(at=time.time(), data=out)
     return out
 
@@ -476,6 +480,82 @@ def get_quotes(codes):
     return out
 
 
+# ---------------------------------------------------------------- 日 K 歷史資料
+kline_cache = {}   # code(lower) -> (ts, payload)
+KLINE_TTL = 1800
+
+
+def _json_from(url, limit=9):
+    return json.loads(_meta_fetch(url, limit).decode("utf-8", errors="replace"))
+
+
+def kline_finmind(code):
+    start = (tw_now() - timedelta(days=420)).strftime("%Y-%m-%d")
+    j = _json_from(f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice"
+                   f"&data_id={code}&start_date={start}")
+    rows = []
+    for d in j.get("data") or []:
+        o, h, l, c = d.get("open"), d.get("max"), d.get("min"), d.get("close")
+        if None in (o, h, l, c) or not c:
+            continue
+        rows.append([d["date"], o, h, l, c, round((d.get("Trading_Volume") or 0) / 1000)])
+    if not rows and j.get("msg") not in (None, "success"):
+        raise RuntimeError(str(j.get("msg"))[:60])
+    return rows
+
+
+def kline_yahoo(symbol):
+    from urllib.parse import quote
+    j = _json_from("https://query1.finance.yahoo.com/v8/finance/chart/"
+                   f"{quote(symbol)}?range=1y&interval=1d")
+    res = (j.get("chart") or {}).get("result")
+    if not res:
+        raise RuntimeError("沒有資料")
+    r = res[0]
+    q = r["indicators"]["quote"][0]
+    rows = []
+    for i, t in enumerate(r.get("timestamp") or []):
+        o, h, l, c, v = q["open"][i], q["high"][i], q["low"][i], q["close"][i], q["volume"][i]
+        if None in (o, h, l, c):
+            continue
+        rows.append([datetime.fromtimestamp(t, TZ).strftime("%Y-%m-%d"),
+                     round(o, 2), round(h, 2), round(l, 2), round(c, 2), round((v or 0) / 1000)])
+    return rows
+
+
+def get_kline(code):
+    key = code.lower()
+    hit = kline_cache.get(key)
+    if hit and time.time() - hit[0] < KLINE_TTL:
+        return True, hit[1]
+    c = code.upper()
+    m = meta.get(c)
+    if c == "T00":
+        attempts = [("yahoo", lambda: kline_yahoo("^TWII"))]
+    else:
+        attempts = [("finmind", lambda: kline_finmind(c))]
+        if m:
+            attempts.append(("yahoo", lambda: kline_yahoo(c + (".TWO" if m["ex"] == "otc" else ".TW"))))
+        else:
+            attempts += [("yahoo", lambda: kline_yahoo(c + ".TW")), ("yahoo", lambda: kline_yahoo(c + ".TWO"))]
+    errs = []
+    for name, fn in attempts:
+        try:
+            rows = fn()
+        except Exception as e:
+            errs.append(f"{name}: {type(e).__name__} {str(e)[:60]}")
+            continue
+        if len(rows) >= 5:
+            seen = {}
+            for r in rows:
+                seen[r[0]] = r
+            payload = {"source": name, "rows": [seen[k] for k in sorted(seen)]}
+            kline_cache[key] = (time.time(), payload)
+            return True, payload
+        errs.append(f"{name}: 資料太少")
+    return False, "；".join(errs) or "沒有可用的資料來源"
+
+
 _started = False
 
 
@@ -544,6 +624,20 @@ def api_quotes():
     got = {it["code"].lower() for it in items}
     missing = [c for c in codes if c.lower() not in got]
     return reply({"ok": True, "items": items, "missing": missing})
+
+
+@app.get("/api/kline")
+def api_kline():
+    try:
+        codes = parse_codes([request.args.get("code", "")])
+    except ValueError as e:
+        return reply({"ok": False, "error": str(e)}, 400)
+    if not codes:
+        return reply({"ok": False, "error": "缺少代號"}, 400)
+    ok, payload = get_kline(codes[0])
+    if ok:
+        return reply({"ok": True, **payload})
+    return reply({"ok": False, "error": payload}, 502)
 
 
 @app.get("/api/diag")
