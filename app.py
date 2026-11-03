@@ -560,9 +560,11 @@ def get_kline(code):
 # ---------------------------------------------------------------- 5 分 K 與「5 穿 20」掃描
 k5_cache = {}      # code(lower) -> (ts, rows)  rows: [時間, 開, 高, 低, 收, 量(張)]
 pins = {}          # 使用者自選股（由手機回報）code -> 最後回報時間
-LOOKBACK = 6       # 最近幾根 5 分K內發生的交叉才算
+LOOKBACK = 6       # 最近幾根 5 分K內發生 5穿20 才算
+WATCH_LOOKBACK = 12  # 「觀察中」：最近幾根內出現過低點反彈
+VOL_X = 1.5        # 量增門檻：反彈後均量 ≥ 反彈前 20 根均量的幾倍
 scan = {"running": False, "done": 0, "total": 0, "ok": 0, "fail": 0,
-        "updated": 0.0, "hits": [], "errs": []}
+        "updated": 0.0, "combos": [], "watch": [], "errs": []}
 scan_lock = threading.Lock()
 
 
@@ -625,23 +627,188 @@ def _sma(vals, n):
     return out
 
 
-def detect_cross(code, rows):
-    """最近 LOOKBACK 根 5 分K內，5MA 由下往上穿過 20MA（以最新一個交易日為準）。"""
-    n = len(rows)
+def bar_end(ts):
+    """Yahoo 的 5 分K時間是「開始」時間；通知與顯示用「收盤」時間（開始 + 5 分鐘）。"""
+    try:
+        return (datetime.strptime(ts, "%Y-%m-%d %H:%M") + timedelta(minutes=5)).strftime("%H:%M")
+    except Exception:
+        return ts[11:16]
+
+
+def closed_rows(rows):
+    """盤中最後一根還沒收完就先不算，避免訊號一下有一下沒有。"""
+    if not rows:
+        return rows
+    try:
+        start = datetime.strptime(rows[-1][0], "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+    except Exception:
+        return rows
+    if market_open() and tw_now() < start + timedelta(minutes=5):
+        return rows[:-1]
+    return rows
+
+
+def _prep(rows):
+    rows = closed_rows(rows)
+    if len(rows) < 25:
+        return None
     closes = [r[4] for r in rows]
-    m5, m20 = _sma(closes, 5), _sma(closes, 20)
+    n = len(rows)
     day = rows[-1][0][:10]
     first = next(j for j in range(n) if rows[j][0][:10] == day)
-    for i in range(n - 1, max(n - 1 - LOOKBACK, first), -1):
-        if None in (m5[i], m20[i], m5[i - 1], m20[i - 1]):
-            continue
-        if m5[i - 1] <= m20[i - 1] and m5[i] > m20[i]:
-            def cut(a):
-                return [None if v is None else round(v, 2) for v in a[first:]]
-            return {"code": code, "time": rows[i][0][11:16], "bars_ago": n - 1 - i,
-                    "last": rows[-1][0][11:16], "date": day, "idx": i - first,
-                    "c": cut(closes), "m5": cut(m5), "m20": cut(m20)}
-    return None
+    return rows, closes, _sma(closes, 5), _sma(closes, 20), n, day, first
+
+
+def _cut(a, first):
+    return [None if v is None else round(v, 2) for v in a[first:]]
+
+
+def _vol_ratio(rows, i1):
+    """反彈（收盤站上 20MA）之後的平均量 ÷ 反彈前 20 根的平均量。"""
+    base = [r[5] for r in rows[max(0, i1 - 20):i1]]
+    recent = [r[5] for r in rows[i1:]]
+    if len(base) < 5 or not recent:
+        return None
+    b_ = sum(base) / len(base)
+    return None if b_ <= 0 else round((sum(recent) / len(recent)) / b_, 1)
+
+
+def detect_signals(code, rows):
+    """回傳 (完整訊號, 觀察中)。
+    完整訊號：當日低點 → 某根 5 分K 收盤站上 20MA（低點反彈）→ 之後 5MA 上穿 20MA（發生在最近 LOOKBACK 根內）。
+    觀察中：已出現低點反彈（最近 WATCH_LOOKBACK 根內），還沒有 5MA 上穿 20MA。"""
+    pre = _prep(rows)
+    if not pre:
+        return None, None
+    rows, closes, m5, m20, n, day, first = pre
+    low_i = min(range(first, n), key=lambda j: (rows[j][3], j))
+
+    def up20(i):
+        return (m20[i] is not None and m20[i - 1] is not None
+                and closes[i - 1] <= m20[i - 1] and closes[i] > m20[i])
+
+    def x520(i):
+        return (None not in (m5[i], m20[i], m5[i - 1], m20[i - 1])
+                and m5[i - 1] <= m20[i - 1] and m5[i] > m20[i])
+
+    bounces = [i for i in range(low_i + 1, n) if up20(i)]
+    base = {"code": code, "date": day, "last": bar_end(rows[-1][0]), "low": rows[low_i][3],
+            "low_idx": low_i - first, "low_time": rows[low_i][0][11:16],
+            "c": _cut(closes, first), "m5": _cut(m5, first), "m20": _cut(m20, first)}
+
+    def pack(kind, i1, i2):
+        ratio = _vol_ratio(rows, i1)
+        return dict(base, kind=kind, time=bar_end(rows[i2][0]), bars_ago=n - 1 - i2, idx=i2 - first,
+                    price=closes[i2], b_idx=i1 - first, b_time=bar_end(rows[i1][0]), b_price=closes[i1],
+                    vol_ratio=ratio, vol_up=bool(ratio and ratio >= VOL_X))
+
+    for i2 in range(n - 1, max(n - 1 - LOOKBACK, first), -1):
+        if x520(i2):
+            prior = [i for i in bounces if i <= i2]
+            if prior:
+                return pack("combo", prior[-1], i2), None
+    recent = [i for i in bounces if i >= n - WATCH_LOOKBACK]
+    if recent:
+        i1 = recent[-1]
+        if not any(x520(j) for j in range(i1, n)):
+            return None, pack("watch", i1, i1)
+    return None, None
+
+
+# ---------------------------------------------------------------- 通知（Telegram / Discord / LINE，擇一設定即可）
+alerted = {}   # 已通知過的訊號 key -> 時間，避免重複通知
+
+
+def notify_channels():
+    ch = []
+    if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"):
+        ch.append("Telegram")
+    if os.environ.get("DISCORD_WEBHOOK_URL"):
+        ch.append("Discord")
+    if os.environ.get("LINE_CHANNEL_TOKEN") and os.environ.get("LINE_USER_ID"):
+        ch.append("LINE")
+    return ch
+
+
+def send_text(text):
+    """送到所有已設定的管道，回傳每個管道的結果（空字串＝成功）。"""
+    res = {}
+    jobs = []
+    if "Telegram" in notify_channels():
+        jobs.append(("Telegram", f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+                     {"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text}, {}))
+    if "Discord" in notify_channels():
+        jobs.append(("Discord", os.environ["DISCORD_WEBHOOK_URL"], {"content": text}, {}))
+    if "LINE" in notify_channels():
+        jobs.append(("LINE", "https://api.line.me/v2/bot/message/push",
+                     {"to": os.environ["LINE_USER_ID"], "messages": [{"type": "text", "text": text[:4900]}]},
+                     {"Authorization": "Bearer " + os.environ["LINE_CHANNEL_TOKEN"]}))
+    for name, url, payload, headers in jobs:
+        try:
+            r = requests.post(url, json=payload, headers=headers, timeout=(4, 10))
+            res[name] = "" if r.status_code < 300 else f"HTTP {r.status_code} {r.text[:80]}"
+        except Exception as e:
+            res[name] = f"{type(e).__name__}: {str(e)[:60]}"
+    return res
+
+
+def stock_name(code):
+    m = meta.get(code.upper())
+    if m and m.get("n"):
+        return m["n"]
+    ent = quote_cache.get(code.lower())
+    return ent[1]["name"] if ent and ent[1] else ""
+
+
+def _hm(t):
+    h_, m_ = t.split(":")
+    return f"{int(h_)}:{m_}"
+
+
+def build_message(h):
+    code = h["code"]
+    name = stock_name(code)
+    when = f"{h['date'][5:7]}/{h['date'][8:10]}  {h['time']}"
+    vol = ""
+    if h.get("vol_ratio") is not None:
+        vol = f"📊 量能：反彈後均量為前 20 根的 {h['vol_ratio']:g} 倍" + ("（量增 ✅）" if h["vol_up"] else "（量沒有明顯放大）") + "\n"
+    head = "即時訊息通知✨\n"
+    if h["kind"] == "combo":
+        return (head + "📈 低點反彈＋5穿20 📈\n\n"
+                f"| {code} {name} |\n\n"
+                f"📉 當日低點 {h['low']:g} ({_hm(h['low_time'])})\n"
+                f"💰 5分K收盤 {h['b_price']:g} 穿過 20MA ({_hm(h['b_time'])})\n"
+                f"🚀 5MA 上穿 20MA ({_hm(h['time'])})\n" + vol +
+                "----------------------------------------\n"
+                "❗ 此訊號非進場訊號 ❗\n❗ 請自行判斷回檔是否站穩 20MA ❗\n\n"
+                f"觸發時間：{when}")
+    return (head + "📈 低點反彈通知（等 5穿20）📈\n\n"
+            f"| {code} {name} |\n\n"
+            f"📉 當日低點 {h['low']:g} ({_hm(h['low_time'])})\n"
+            f"💰 5分K收盤 {h['price']:g} 穿過 20MA\n" + vol +
+            "----------------------------------------\n"
+            "❗ 此訊號非進場訊號 ❗\n❗ 還沒出現 5MA 上穿 20MA ❗\n\n"
+            f"觸發時間：{when}")
+
+
+def notify_new(combos, watch):
+    if not notify_channels() or not market_open():
+        return
+    arrs = [combos] + ([watch] if os.environ.get("NOTIFY_BOUNCE") == "1" else [])
+    new = []
+    for arr in arrs:
+        for h in arr:
+            k = f"{h['date']}|{h['code']}|{h['kind']}|{h['time']}"
+            if k not in alerted:
+                alerted[k] = time.time()
+                new.append(h)
+    for h in new[:12]:
+        send_text(build_message(h))
+        time.sleep(0.4)
+    if len(new) > 12:
+        send_text(f"另有 {len(new) - 12} 檔新訊號，請打開 App 查看。")
+    for k in [k for k, t in alerted.items() if time.time() - t > 2 * 86400]:
+        del alerted[k]
 
 
 def scan_universe():
@@ -660,19 +827,23 @@ def scan_universe():
     return out[:250]
 
 
+def _rank(x):
+    return (0 if x["vol_up"] else 1, x["bars_ago"], x["code"])
+
+
 def run_scan():
     try:
         codes = scan_universe()
         with scan_lock:
             scan.update(running=True, done=0, total=len(codes), ok=0, fail=0, errs=[])
-        hits = []
+        combos, watch = [], []
 
         def work(c):
             try:
                 ok, data = get_kline5(c, ttl=240)
             except Exception as e:
                 ok, data = False, f"{type(e).__name__}"
-            h = detect_cross(c, data) if ok else None
+            sig = detect_signals(c, data) if ok else (None, None)
             with scan_lock:
                 scan["done"] += 1
                 if ok:
@@ -681,18 +852,27 @@ def run_scan():
                     scan["fail"] += 1
                     if len(scan["errs"]) < 3:
                         scan["errs"].append(f"{c}：{str(data)[:60]}")
-                if h:
-                    hits.append(h)
-                    if not scan["updated"]:   # 第一次掃描：結果邊掃邊出現
-                        scan["hits"] = sorted(hits, key=lambda x: (x["bars_ago"], x["code"]))
+                if sig[0]:
+                    combos.append(sig[0])
+                if sig[1]:
+                    watch.append(sig[1])
+                if (sig[0] or sig[1]) and not scan["updated"]:   # 第一次掃描：結果邊掃邊出現
+                    scan["combos"] = sorted(combos, key=_rank)
+                    scan["watch"] = sorted(watch, key=_rank)
             time.sleep(0.15)
 
         with ThreadPoolExecutor(max_workers=3) as ex:
             list(ex.map(work, codes))
-        hits.sort(key=lambda h: (h["bars_ago"], h["code"]))
+        combos.sort(key=_rank)
+        watch.sort(key=_rank)
         with scan_lock:
-            scan["hits"] = hits
+            scan["combos"] = combos
+            scan["watch"] = watch
             scan["updated"] = time.time()
+        try:
+            notify_new(combos, watch)
+        except Exception:
+            pass
     finally:
         with scan_lock:
             scan["running"] = False
@@ -709,6 +889,17 @@ def ensure_scan():
     threading.Thread(target=run_scan, daemon=True).start()
 
 
+def alert_loop():
+    """盤中沒人開 App 也會每 4 分鐘掃一次並發通知（需要伺服器保持醒著）。"""
+    while True:
+        time.sleep(30)
+        try:
+            if notify_channels() and market_open():
+                ensure_scan()
+        except Exception:
+            pass
+
+
 _started = False
 
 
@@ -719,6 +910,7 @@ def start_background():
     _started = True
     load_companies_file()  # 先同步讀檔，第一個請求進來時就有產業資料
     threading.Thread(target=meta_loop, daemon=True).start()
+    threading.Thread(target=alert_loop, daemon=True).start()
 
 
 start_background()
@@ -820,8 +1012,19 @@ def api_scan():
             "ok": True, "running": scan["running"], "done": scan["done"], "total": scan["total"],
             "ok_n": scan["ok"], "fail_n": scan["fail"], "errs": list(scan["errs"]),
             "updated": datetime.fromtimestamp(upd, TZ).strftime("%H:%M:%S") if upd else "",
-            "lookback": LOOKBACK, "market_open": market_open(), "hits": list(scan["hits"]),
+            "lookback": LOOKBACK, "watch_lookback": WATCH_LOOKBACK, "vol_x": VOL_X,
+            "market_open": market_open(), "combos": list(scan["combos"]), "watch": list(scan["watch"]),
+            "notify": notify_channels(),
         })
+
+
+@app.route("/api/notify_test", methods=["GET", "POST"])
+def api_notify_test():
+    if not notify_channels():
+        return reply({"ok": False, "error": "還沒設定通知管道（Telegram、Discord 或 LINE 擇一）"})
+    res = send_text("✅ 台股即時報價：測試通知。收到這則就代表通知設定成功。")
+    bad = {k: v for k, v in res.items() if v}
+    return reply({"ok": not bad, "result": res, "error": "；".join(f"{k}：{v}" for k, v in bad.items())})
 
 
 @app.get("/api/diag")
