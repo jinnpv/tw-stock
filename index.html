@@ -729,10 +729,12 @@ input::placeholder{color:var(--muted)}
       }
       $('#scantext').textContent = t;
       const on = sc && sc.notify && sc.notify.length;
-      $('#ntest').hidden = !on;
-      if (!$('#nstat').dataset.msg) $('#nstat').textContent = !sc ? '' : on
-        ? `通知：${sc.notify.join('、')} 已設定，盤中出現「完整訊號」會傳給你（需要伺服器保持醒著）`
-        : '通知：尚未設定（要在 Render 設定 Telegram、Discord 或 LINE 其中一種）';
+      $('#ntest').hidden = false;
+      if (!$('#nstat').dataset.msg) {
+        if (on) $('#nstat').textContent = `通知：${sc.notify.join('、')} 已設定，盤中出現「完整訊號」會傳給你（需要伺服器保持醒著）`;
+        else if (!sc) $('#nstat').textContent = '掃描資料連線中，稍後可傳測試通知確認設定';
+        else $('#nstat').textContent = '通知：尚未設定（要在 Render 設定 Telegram、Discord 或 LINE 其中一種）';
+      }
     } else if (inGroupList) {
       const set = groupSet();
       vh.append(h('b', null, NAMES[tab]), h('span', 'sp'), h('span', null, set.length ? set.length + (tab === 'industry' ? ' 個產業' : ' 個族群') : ''));
