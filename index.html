@@ -161,6 +161,22 @@ input::placeholder{color:var(--muted)}
 .xmini .xdot{fill:var(--up); stroke:var(--sheet); stroke-width:1.5}
 .xinfo{font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums}
 .xinfo b{color:var(--up); font-weight:500}
+.bar button{font-size:13.5px}
+.kchart .xlow{fill:none; stroke:var(--down); stroke-width:1.6}
+.xmini .xlowdot{fill:var(--down); stroke:var(--sheet); stroke-width:1.5}
+.scan .ntest{margin-left:6px; background:none; border:1px solid var(--line); border-radius:6px; color:var(--accent); font-size:12px; padding:2px 8px; cursor:pointer}
+#nstat{margin-top:2px}
+.toast{
+  position:fixed; z-index:9; left:12px; right:12px; top:calc(var(--hdr) + 6px);
+  background:var(--accent); color:#fff; padding:10px 14px; border-radius:10px; font-size:14px; font-weight:500;
+  box-shadow:0 4px 18px rgba(0,0,0,.28);
+}
+@media (prefers-color-scheme: dark){ .toast{color:#0E151C} }
+.vbadge{flex:none; font-size:10.5px; line-height:1; padding:3px 4px; border-radius:4px; color:#fff; background:var(--up); font-weight:700}
+@media (prefers-color-scheme: dark){ .vbadge{color:#0E151C} }
+.xmini .xbdot{fill:var(--accent); stroke:var(--sheet); stroke-width:1.5}
+.kchart .xbring{fill:none; stroke:var(--accent); stroke-width:1.8}
+#sigseg{margin:0 0 8px}
 </style>
 </head>
 <body>
@@ -172,9 +188,9 @@ input::placeholder{color:var(--muted)}
 </header>
 
 <div class="main">
-  <p class="hint" id="hint">點下方的「自選」「產業別」「概念族群」或「5穿20」<br>展開來看個股</p>
+  <p class="hint" id="hint">點下方的分類，展開來看個股<br>「5穿20」是 5 分K 的自動訊號：先低點反彈、再 5MA 上穿 20MA</p>
   <div class="vh" id="vh" hidden></div>
-  <p class="scan" id="scan" hidden></p>
+  <div class="scan" id="scan" hidden><div class="seg" id="sigseg"></div><span id="scantext"></span><button type="button" class="ntest" id="ntest" hidden>傳測試通知</button><div id="nstat"></div></div>
   <form id="add" autocomplete="off" hidden>
     <input id="code" inputmode="text" enterkeyhint="done" placeholder="輸入代號，例如 2330" aria-label="股票代號">
     <button class="add" type="submit">加入</button>
@@ -186,6 +202,7 @@ input::placeholder{color:var(--muted)}
   <p class="foot" id="foot" hidden>卡片上的 K 棒是今天的日 K：實體為開盤到目前成交價，細線為最高最低，虛線為昨收。點個股可看近 60 個交易日的日 K。「龍頭」是同產業市值最大的公司（發行股數 × 最近收盤價）。</p>
 </div>
 
+<div class="toast" id="toast" hidden></div>
 <nav class="bar" id="bar" aria-label="分類">
   <button type="button" data-tab="watch">自選</button>
   <button type="button" data-tab="industry">產業別</button>
@@ -200,6 +217,9 @@ input::placeholder{color:var(--muted)}
   const DEFAULT = ['t00', '2330', '2317'];
   const PAGE = 40;
   const NAMES = {watch: '自選', industry: '產業別', concept: '概念族群', cross: '5穿20'};
+  const isSig = () => tab === 'cross';
+  const KIND = {combo: '低點反彈＋5穿20', watch: '低點反彈'};
+  let sigMode = 'combo';   // combo＝完整訊號、watch＝已反彈等 5穿20
   const norm = c => c.toLowerCase() === 't00' ? 't00' : c.toUpperCase();
   const key = c => c.toLowerCase();
 
@@ -215,7 +235,8 @@ input::placeholder{color:var(--muted)}
   let groups = {concept: [], industry: [], ready: false};
   let groupTries = 0;
   let quotes = {}, kline = {}, k5 = {}, kmode = {}, scrub = {};
-  let scanState = null, scanErr = '', scanTimer = null;
+  let scanState = null, scanErr = '', scanTimer = null, seenInit = false, toastTimer = null;
+  const seen = new Set();
   let missing = new Set();
   const open = new Set();
   let shown = PAGE;
@@ -269,17 +290,17 @@ input::placeholder{color:var(--muted)}
   /* ---------- 目前檢視 ---------- */
   const groupSet = () => tab === 'industry' ? groups.industry : tab === 'concept' ? groups.concept : [];
   const curGroup = () => group ? groupSet().find(g => g.id === group) : null;
-  const showingStocks = () => tab === 'watch' || tab === 'cross' || (tab && curGroup());
-  const hitList = () => (scanState && scanState.hits) || [];
+  const showingStocks = () => tab === 'watch' || isSig() || (tab && curGroup());
+  const hitList = () => (scanState && (sigMode === 'watch' ? scanState.watch : scanState.combos)) || [];
   function viewCodes() {
     if (tab === 'watch') return list;
-    if (tab === 'cross') return hitList().map(x => x.code);
+    if (isSig()) return hitList().map(x => x.code);
     const g = curGroup();
     return g ? g.codes : [];
   }
   function visible() {
     if (tab === 'watch') return list.slice();
-    if (tab === 'cross') return hitList().map(x => x.code);
+    if (isSig()) return hitList().map(x => x.code);
     const g = curGroup();
     if (!g) return [];
     const rows = g.codes.filter(c => !missing.has(key(c)));
@@ -296,7 +317,7 @@ input::placeholder{color:var(--muted)}
   function crossChart(hit) {
     const W = 180, H = 56, SLOTS = 54;
     const svg = sv('svg', {viewBox: `0 0 ${W} ${H}`, class: 'xmini', 'aria-hidden': 'true'});
-    const vals = [].concat(hit.c, hit.m5, hit.m20).filter(v => v != null);
+    const vals = [].concat(hit.c, [hit.low], hit.m5, hit.m20).filter(v => v != null);
     let lo = Math.min(...vals), hi = Math.max(...vals);
     if (hi - lo < 1e-9) { hi += 0.5; lo -= 0.5; }
     const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
@@ -307,8 +328,13 @@ input::placeholder{color:var(--muted)}
       if (pts.length > 1) svg.append(sv('polyline', {points: pts.join(' '), class: c}));
     };
     line(hit.c, 'xp'); line(hit.m20, 'x20'); line(hit.m5, 'x5');
-    const v = hit.m5[hit.idx];
-    if (v != null) svg.append(sv('circle', {cx: X(hit.idx), cy: Y(v), r: 3.6, class: 'xdot'}));
+    svg.append(sv('circle', {cx: X(hit.low_idx), cy: Y(hit.low), r: 3.4, class: 'xlowdot'}));
+    const bv = hit.c[hit.b_idx];
+    if (bv != null) svg.append(sv('circle', {cx: X(hit.b_idx), cy: Y(bv), r: 3.4, class: 'xbdot'}));
+    if (hit.kind === 'combo') {
+      const v = hit.m5[hit.idx];
+      if (v != null) svg.append(sv('circle', {cx: X(hit.idx), cy: Y(v), r: 3.6, class: 'xdot'}));
+    }
     return svg;
   }
 
@@ -354,7 +380,7 @@ input::placeholder{color:var(--muted)}
     });
   }
 
-  const getMode = code => kmode[key(code)] || (tab === 'cross' ? 'min5' : 'day');
+  const getMode = code => kmode[key(code)] || (isSig() ? 'min5' : 'day');
 
   function segEl(code) {
     const mode = getMode(code);
@@ -459,6 +485,21 @@ input::placeholder{color:var(--muted)}
         }
       });
     }
+    if (mode === 'min5') {   // 當日低點打一個綠圈
+      const ld = all[all.length - 1][0].slice(0, 10);
+      let li = -1;
+      view.forEach((r, i) => { if (r[0].slice(0, 10) === ld && (li < 0 || r[3] < view[li][3])) li = i; });
+      if (li >= 0) svg.append(sv('circle', {cx: X(li), cy: y(view[li][3]), r: 3.4, class: 'xlow'}));
+    }
+    if (mode === 'min5') {   // 低點後第一次收盤站上 20MA 的位置打藍圈（只有 5穿20 頁面的個股才有）
+      const hit = isSig() ? hitList().find(x => key(x.code) === key(code)) : null;
+      if (hit) {
+        const ld = all[all.length - 1][0].slice(0, 10);
+        const start = all.findIndex(r => r[0].slice(0, 10) === ld);
+        const vi = start + hit.b_idx - off;
+        if (start >= 0 && vi >= 0 && vi < N) svg.append(sv('circle', {cx: X(vi), cy: y(view[vi][4]), r: 4.2, class: 'xbring'}));
+      }
+    }
     const cross = sv('line', {x1: 0, x2: 0, y1: PT, y2: VB, class: 'cross'});
     cross.setAttribute('visibility', 'hidden');
     svg.append(cross);
@@ -495,7 +536,7 @@ input::placeholder{color:var(--muted)}
     const lg = h('div', 'klegend');
     const a = h('span'); const ai = h('i'); ai.style.background = 'var(--ma5)'; a.append(ai, 'MA5');
     const b = h('span'); const bi = h('i'); bi.style.background = 'var(--accent)'; b.append(bi, 'MA20');
-    lg.append(a, b, h('span', null, mode === 'min5' ? `近 ${N} 根 5 分K　紅點＝5MA 上穿 20MA` : `近 ${N} 個交易日　下方為成交量`));
+    lg.append(a, b, h('span', null, mode === 'min5' ? `近 ${N} 根 5 分K　紅點＝5MA 上穿 20MA　綠圈＝當日低點　藍圈＝低點反彈` : `近 ${N} 個交易日　下方為成交量`));
     wrap.append(lg);
     if (st && st.state === 'err') wrap.append(h('div', 'kmsg', '資料更新失敗（' + (st.msg || '原因不明') + '），顯示的是上一次的資料'));
     return wrap;
@@ -600,6 +641,8 @@ input::placeholder{color:var(--muted)}
     const top = h('div', 'top');
     top.append(h('span', 'n', q.name));
     if (info.leader) top.append(h('span', 'lead', '龍頭'));
+    const hit0 = isSig() ? hitList().find(x => key(x.code) === k) : null;
+    if (hit0 && hit0.vol_up) top.append(h('span', 'vbadge', '量增'));
 
     const sub = h('div', 'sub');
     sub.append(h('span', 'c', q.code));
@@ -609,7 +652,7 @@ input::placeholder{color:var(--muted)}
     const left = h('div');
     const pxText = px(q.price, q.code);
     left.append(h('div', 'px ' + d + (pxText.length > 6 ? ' sm' : ''), pxText));
-    const hit = tab === 'cross' ? hitList().find(x => key(x.code) === k) : null;
+    const hit = isSig() ? hitList().find(x => key(x.code) === k) : null;
     mid.append(left);
     if (!hit) mid.append(candle(q));
 
@@ -621,7 +664,12 @@ input::placeholder{color:var(--muted)}
     if (hit) {
       card.append(crossChart(hit));
       const xi = h('div', 'xinfo');
-      xi.append(h('b', null, hit.time), ` 5MA 上穿 20MA　${hit.bars_ago === 0 ? '剛發生' : hit.bars_ago + ' 根前'}`);
+      const ago = hit.bars_ago === 0 ? '剛發生' : hit.bars_ago + ' 根前';
+      xi.append(`低點 ${px(hit.low)} (${hit.low_time})`, document.createElement('br'),
+        h('b', null, hit.b_time), ` 收 ${px(hit.b_price)} 穿過 20MA`, document.createElement('br'));
+      if (hit.kind === 'combo') xi.append(h('b', null, hit.time), ` 5MA 上穿 20MA　${ago}`);
+      else xi.append('還在等 5MA 上穿 20MA');
+      if (hit.vol_ratio != null) xi.append(document.createElement('br'), `量能 ${hit.vol_ratio}×`);
       card.append(xi);
     }
     const out = [card];
@@ -631,6 +679,10 @@ input::placeholder{color:var(--muted)}
 
   /* ---------- 畫面 ---------- */
   function notice(msg) { $('#notice').textContent = msg || ''; }
+  function toast(msg) {
+    const t = $('#toast'); t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 9000);
+  }
 
   function render() {
     // 底部分頁
@@ -643,8 +695,8 @@ input::placeholder{color:var(--muted)}
     const inGroupList = (tab === 'industry' || tab === 'concept') && !curGroup();
     gl.hidden = !inGroupList;
     list_.hidden = !showingStocks();
-    $('#foot').hidden = !showingStocks() || tab === 'cross';
-    scanEl.hidden = tab !== 'cross';
+    $('#foot').hidden = !showingStocks() || isSig();
+    scanEl.hidden = !isSig();
 
     vh.textContent = '';
     gl.textContent = '';
@@ -652,18 +704,35 @@ input::placeholder{color:var(--muted)}
 
     if (tab === 'watch') {
       vh.append(h('b', null, '自選'), h('span', 'sp'), h('span', null, list.length + ' 檔'));
-    } else if (tab === 'cross') {
+    } else if (isSig()) {
       vh.append(h('b', null, '5穿20'), h('span', 'sp'), h('span', null, hitList().length + ' 檔'));
       const sc = scanState;
+      const seg = $('#sigseg');
+      seg.textContent = '';
+      [['combo', '完整訊號', sc ? sc.combos.length : 0], ['watch', '已反彈・等5穿20', sc ? sc.watch.length : 0]].forEach(([m, label, nn]) => {
+        const b = h('button', null, `${label} ${nn}`);
+        b.type = 'button';
+        b.setAttribute('aria-pressed', String(sigMode === m));
+        b.addEventListener('click', () => { sigMode = m; render(); refresh(); });
+        seg.append(b);
+      });
       let t = '';
+      const rule = sigMode === 'watch'
+        ? `已出現低點反彈（當日低點後，最近 ${sc ? sc.watch_lookback : 12} 根 5 分K 內有收盤站上 20MA），還沒出現 5MA 上穿 20MA`
+        : `條件：當日低點 → 5分K 收盤站上 20MA（低點反彈）→ 之後 5MA 上穿 20MA（最近 ${sc ? sc.lookback : 6} 根內）。「量增」＝反彈後均量 ≥ 前 20 根的 ${sc ? sc.vol_x : 1.5} 倍，有量排前面，沒量也會列出`;
       if (!sc) t = scanErr || '掃描中…';
       else if (sc.running) t = `掃描中 ${sc.done}/${sc.total}，結果會陸續出現…`;
       else {
-        t = `條件：最近 ${sc.lookback} 根 5 分K 內，5MA 由下往上穿過 20MA（圖中紅點）。掃描範圍：自選＋概念族群＋各產業龍頭，共 ${sc.total} 檔，資料更新 ${sc.updated || '—'}`;
+        t = `${rule}。掃描範圍：自選＋概念族群＋各產業龍頭，共 ${sc.total} 檔，資料更新 ${sc.updated || '—'}`;
         if (sc.ok_n === 0 && sc.total) t = `5分K資料抓取失敗（${sc.errs.join('；') || '原因不明'}）`;
         else if (sc.fail_n) t += `，其中 ${sc.fail_n} 檔抓取失敗`;
       }
-      scanEl.textContent = t;
+      $('#scantext').textContent = t;
+      const on = sc && sc.notify && sc.notify.length;
+      $('#ntest').hidden = !on;
+      if (!$('#nstat').dataset.msg) $('#nstat').textContent = !sc ? '' : on
+        ? `通知：${sc.notify.join('、')} 已設定，盤中出現「完整訊號」會傳給你（需要伺服器保持醒著）`
+        : '通知：尚未設定（要在 Render 設定 Telegram、Discord 或 LINE 其中一種）';
     } else if (inGroupList) {
       const set = groupSet();
       vh.append(h('b', null, NAMES[tab]), h('span', 'sp'), h('span', null, set.length ? set.length + (tab === 'industry' ? ' 個產業' : ' 個族群') : ''));
@@ -690,11 +759,11 @@ input::placeholder{color:var(--muted)}
     if (showingStocks()) {
       const rows = visible();
       if (!rows.length) list_.append(h('div', 'empty', tab === 'watch' ? '清單是空的，輸入股票代號就能加入。'
-        : tab === 'cross' ? (scanState && scanState.running ? '掃描中…' : '目前沒有符合的股票') : '這個分類目前沒有資料。'));
+        : isSig() ? (scanState && scanState.running ? '掃描中…' : '目前沒有符合的股票') : '這個分類目前沒有資料。'));
       rows.forEach(c => cardEl(c).forEach(el => list_.append(el)));
     }
     const g = curGroup();
-    $('#more').hidden = !(tab && tab !== 'watch' && tab !== 'cross' && g && shown < g.codes.length);
+    $('#more').hidden = !(tab && tab !== 'watch' && !isSig() && g && shown < g.codes.length);
 
     const live = isOpen();
     $('#status').classList.toggle('live', live);
@@ -738,13 +807,21 @@ input::placeholder{color:var(--muted)}
 
   async function pollScan() {
     clearTimeout(scanTimer);
-    if (tab !== 'cross') return;
+    if (!isSig()) return;
     try {
       const r = await fetch('/api/scan', {cache: 'no-store'});
       const j = await r.json();
       if (j.ok) {
         const was = scanState;
         scanState = j; scanErr = '';
+        const all = j.combos;
+        const fresh = all.filter(x => !seen.has(`${x.date}|${x.code}|${x.kind}|${x.time}`));
+        all.forEach(x => seen.add(`${x.date}|${x.code}|${x.kind}|${x.time}`));
+        if (seenInit && fresh.length && !j.running) {
+          const f = fresh[0];
+          toast(`完整訊號 ${fresh.length} 檔：${f.code} ${f.vol_up ? '量增 ' : ''}（${f.time}）`);
+        }
+        if (!j.running) seenInit = true;
         render();
         if (!j.running && (!was || was.running || was.updated !== j.updated)) refresh();
       }
@@ -792,7 +869,7 @@ input::placeholder{color:var(--muted)}
     } else { tab = t; group = null; }
     shown = PAGE;
     render(); window.scrollTo(0, 0); refresh();
-    if (tab === 'cross') pollScan(); else clearTimeout(scanTimer);
+    if (isSig()) pollScan(); else clearTimeout(scanTimer);
   }));
   $('#add').addEventListener('submit', e => {
     e.preventDefault();
@@ -807,6 +884,15 @@ input::placeholder{color:var(--muted)}
     list.push(v); saveList(); render(); refresh();
   });
   $('#more').addEventListener('click', () => { shown += PAGE; render(); });
+  $('#ntest').addEventListener('click', async () => {
+    const st = $('#nstat'); st.dataset.msg = '1'; st.textContent = '傳送中…';
+    try {
+      const r = await fetch('/api/notify_test', {method: 'POST'});
+      const j = await r.json();
+      st.textContent = j.ok ? '測試通知已送出，請看你的 Telegram／Discord／LINE' : '傳送失敗：' + (j.error || '原因不明');
+    } catch (e) { st.textContent = '傳送失敗：連不上伺服器'; }
+    setTimeout(() => { delete st.dataset.msg; render(); }, 8000);
+  });
   $('#status').addEventListener('click', () => refresh());
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 
