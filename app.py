@@ -89,6 +89,14 @@ def tw_now():
     return datetime.now(TZ)
 
 
+def market_open():
+    n = tw_now()
+    if n.weekday() >= 5:
+        return False
+    m = n.hour * 60 + n.minute
+    return 535 <= m <= 811  # 08:55–13:31
+
+
 IND_KEY = {v: k for k, v in IND_NAMES.items()}
 
 
@@ -560,8 +568,8 @@ def get_kline(code):
 # ---------------------------------------------------------------- 5 分 K 與「5 穿 20」掃描
 k5_cache = {}      # code(lower) -> (ts, rows)  rows: [時間, 開, 高, 低, 收, 量(張)]
 pins = {}          # 使用者自選股（由手機回報）code -> 最後回報時間
-LOOKBACK = 6       # 最近幾根 5 分K內發生 5穿20 才算
-WATCH_LOOKBACK = 12  # 「觀察中」：最近幾根內出現過低點反彈
+LOOKBACK = 54      # 當日最多 54 根；實際只要今日 5MA 仍上方就算
+WATCH_LOOKBACK = 54  # 觀察中：今日反彈後還沒 5穿20 都算
 VOL_X = 1.5        # 量增門檻：反彈後均量 ≥ 反彈前 20 根均量的幾倍
 scan = {"running": False, "done": 0, "total": 0, "ok": 0, "fail": 0,
         "updated": 0.0, "combos": [], "watch": [], "errs": []}
@@ -702,16 +710,22 @@ def detect_signals(code, rows):
                     price=closes[i2], b_idx=i1 - first, b_time=bar_end(rows[i1][0]), b_price=closes[i1],
                     vol_ratio=ratio, vol_up=bool(ratio and ratio >= VOL_X))
 
-    for i2 in range(n - 1, max(n - 1 - LOOKBACK, first), -1):
-        if x520(i2):
-            prior = [i for i in bounces if i <= i2]
-            if prior:
-                return pack("combo", prior[-1], i2), None
-    recent = [i for i in bounces if i >= n - WATCH_LOOKBACK]
-    if recent:
-        i1 = recent[-1]
-        if not any(x520(j) for j in range(i1, n)):
-            return None, pack("watch", i1, i1)
+    # 完整訊號：bounces 後有 5穿20，且 5MA 仍在 20MA 之上（持倉中）
+    currently_above = (m5[n - 1] is not None and m20[n - 1] is not None and m5[n - 1] > m20[n - 1])
+    if currently_above:
+        for b in bounces:
+            for i2 in range(b + 1, n):
+                if x520(i2):
+                    # 找這個 bounce 之後最近的 5穿20
+                    best = max((j for j in range(b + 1, n) if x520(j)), default=None)
+                    if best is not None:
+                        return pack("combo", b, best), None
+                    break
+    # 觀察中：bounces 後還沒 5穿20
+    if bounces:
+        b = bounces[-1]
+        if not any(x520(j) for j in range(b + 1, n)):
+            return None, pack("watch", b, b)
     return None, None
 
 
@@ -1005,17 +1019,23 @@ def api_kline5():
 
 @app.get("/api/scan")
 def api_scan():
-    ensure_scan()
-    with scan_lock:
-        upd = scan["updated"]
-        return reply({
-            "ok": True, "running": scan["running"], "done": scan["done"], "total": scan["total"],
-            "ok_n": scan["ok"], "fail_n": scan["fail"], "errs": list(scan["errs"]),
-            "updated": datetime.fromtimestamp(upd, TZ).strftime("%H:%M:%S") if upd else "",
-            "lookback": LOOKBACK, "watch_lookback": WATCH_LOOKBACK, "vol_x": VOL_X,
-            "market_open": market_open(), "combos": list(scan["combos"]), "watch": list(scan["watch"]),
-            "notify": notify_channels(),
-        })
+    try:
+        ensure_scan()
+    except Exception:
+        pass
+    try:
+        with scan_lock:
+            upd = scan["updated"]
+            return reply({
+                "ok": True, "running": scan["running"], "done": scan["done"], "total": scan["total"],
+                "ok_n": scan["ok"], "fail_n": scan["fail"], "errs": list(scan["errs"]),
+                "updated": datetime.fromtimestamp(upd, TZ).strftime("%H:%M:%S") if upd else "",
+                "lookback": LOOKBACK, "watch_lookback": WATCH_LOOKBACK, "vol_x": VOL_X,
+                "market_open": market_open(), "combos": list(scan["combos"]), "watch": list(scan["watch"]),
+                "notify": notify_channels(),
+            })
+    except Exception as e:
+        return reply({"ok": False, "error": str(e)[:120]}, 500)
 
 
 @app.route("/api/notify_test", methods=["GET", "POST"])
