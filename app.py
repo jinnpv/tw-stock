@@ -336,6 +336,30 @@ def load_concepts():
     return out
 
 
+def load_sectors():
+    """產業分頁：industry.json（依籌碼K線截圖整理），格式同產業別。"""
+    try:
+        with open(os.path.join(BASE_DIR, "industry.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+    out = []
+    for g in data.get("groups", []):
+        name = str(g.get("name", "")).strip()
+        codes, names = [], {}
+        for it in g.get("stocks", []):
+            try:
+                c, n = str(it[0]).strip().upper(), str(it[1]).strip()
+            except Exception:
+                continue
+            if CODE_RE.match(c) and c not in codes:
+                codes.append(c)
+                names[c] = n
+        if name and codes:
+            out.append({"id": "s:" + name, "name": name, "codes": codes, "names": names})
+    return out
+
+
 # ---------------------------------------------------------------- 報價
 def channels(code):
     if code.lower() == "t00":
@@ -1070,6 +1094,7 @@ def api_groups():
         "ready": meta_state["ok"],
         "concept": load_concepts(),
         "industry": build_industries(),
+        "sector": load_sectors(),
     })
 
 
