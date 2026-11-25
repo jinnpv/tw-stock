@@ -205,7 +205,6 @@ input::placeholder{color:var(--muted)}
 <div class="toast" id="toast" hidden></div>
 <nav class="bar" id="bar" aria-label="分類">
   <button type="button" data-tab="watch">自選</button>
-  <button type="button" data-tab="industry">產業別</button>
   <button type="button" data-tab="sector">產業</button>
   <button type="button" data-tab="concept">概念族群</button>
   <button type="button" data-tab="cross">5穿20</button>
@@ -217,7 +216,7 @@ input::placeholder{color:var(--muted)}
   const KEY = 'tw_watchlist_v1';
   const DEFAULT = ['t00', '2330', '2317'];
   const PAGE = 40;
-  const NAMES = {watch: '自選', industry: '產業別', sector: '產業', concept: '概念族群', cross: '5穿20'};
+  const NAMES = {watch: '自選', sector: '產業', concept: '概念族群', cross: '5穿20'};
   const isSig = () => tab === 'cross';
   const KIND = {combo: '低點反彈＋5穿20', watch: '低點反彈'};
   let sigMode = 'combo';   // combo＝完整訊號、watch＝已反彈等 5穿20
@@ -231,9 +230,9 @@ input::placeholder{color:var(--muted)}
   function saveList() { try { localStorage.setItem(KEY, JSON.stringify(list)); } catch (e) {} }
 
   let list = loadList();
-  let tab = null;            // null | 'watch' | 'industry' | 'concept'
+  let tab = null;            // null | 'watch' | 'sector' | 'concept'
   let group = null;          // 目前點開的產業／族群 id
-  let groups = {concept: [], industry: [], sector: [], ready: false};
+  let groups = {concept: [], sector: [], ready: false};
   let groupTries = 0;
   let quotes = {}, kline = {}, k5 = {}, kmode = {}, scrub = {};
   let scanState = null, scanErr = '', scanTimer = null, seenInit = false, toastTimer = null;
@@ -289,7 +288,7 @@ input::placeholder{color:var(--muted)}
   }
 
   /* ---------- 目前檢視 ---------- */
-  const groupSet = () => tab === 'industry' ? groups.industry : tab === 'sector' ? groups.sector : tab === 'concept' ? groups.concept : [];
+  const groupSet = () => tab === 'sector' ? groups.sector : tab === 'concept' ? groups.concept : [];
   const curGroup = () => group ? groupSet().find(g => g.id === group) : null;
   const showingStocks = () => tab === 'watch' || isSig() || (tab && curGroup());
   const hitList = () => (scanState && (sigMode === 'watch' ? scanState.watch : scanState.combos)) || [];
@@ -693,7 +692,7 @@ input::placeholder{color:var(--muted)}
     hint.hidden = tab !== null;
     vh.hidden = tab === null;
     $('#add').hidden = tab !== 'watch';
-    const inGroupList = (tab === 'industry' || tab === 'sector' || tab === 'concept') && !curGroup();
+    const inGroupList = (tab === 'sector' || tab === 'concept') && !curGroup();
     gl.hidden = !inGroupList;
     list_.hidden = !showingStocks();
     $('#foot').hidden = !showingStocks() || isSig();
@@ -738,9 +737,9 @@ input::placeholder{color:var(--muted)}
       }
     } else if (inGroupList) {
       const set = groupSet();
-      vh.append(h('b', null, NAMES[tab]), h('span', 'sp'), h('span', null, set.length ? set.length + (tab === 'industry' || tab === 'sector' ? ' 個產業' : ' 個族群') : ''));
+      vh.append(h('b', null, NAMES[tab]), h('span', 'sp'), h('span', null, set.length ? set.length + (tab === 'sector' ? ' 個產業' : ' 個族群') : ''));
       if (!set.length) {
-        gl.append(h('div', 'gempty', tab === 'industry' || tab === 'sector'
+        gl.append(h('div', 'gempty', tab === 'sector'
           ? (groupTries >= 12 ? '產業資料還沒載入，稍後再試' : '載入中…')
           : '還沒有概念族群'));
       }
@@ -851,7 +850,7 @@ input::placeholder{color:var(--muted)}
       const r = await fetch('/api/groups', {cache: 'no-store'});
       const j = await r.json();
       if (j.ok) {
-        groups = {concept: j.concept, industry: j.industry, sector: j.sector || [], ready: j.ready};
+        groups = {concept: j.concept, sector: j.sector || [], ready: j.ready};
         groupTries = tries;
         render();
         if (!j.ready && tries < 12) setTimeout(() => loadGroups(tries + 1), 10000);
