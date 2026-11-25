@@ -850,19 +850,19 @@ def notify_new(combos, watch):
 
 
 def scan_universe():
-    codes = []
+    now = time.time()
+    codes = [c for c, ts in pins.items() if now - ts < 7 * 86400]   # 自選優先
     for g in load_concepts():
         codes += g["codes"]
-    codes += list(leaders.values())
-    now = time.time()
-    codes += [c for c, ts in pins.items() if now - ts < 7 * 86400]
+    for g in load_sectors():                                         # 5穿20 改從「產業」分頁的股票來掃
+        codes += g["codes"]
     seen, out = set(), []
     for c in codes:
         c = c.upper()
         if c not in seen and c != "T00":
             seen.add(c)
             out.append(c)
-    return out[:250]
+    return out[:2000]
 
 
 def _rank(x):
@@ -897,9 +897,9 @@ def run_scan():
                 if (sig[0] or sig[1]) and not scan["updated"]:   # 第一次掃描：結果邊掃邊出現
                     scan["combos"] = sorted(combos, key=_rank)
                     scan["watch"] = sorted(watch, key=_rank)
-            time.sleep(0.15)
+            time.sleep(0.1)
 
-        with ThreadPoolExecutor(max_workers=3) as ex:
+        with ThreadPoolExecutor(max_workers=6) as ex:
             list(ex.map(work, codes))
         combos.sort(key=_rank)
         watch.sort(key=_rank)
@@ -1093,7 +1093,6 @@ def api_groups():
         "ok": True,
         "ready": meta_state["ok"],
         "concept": load_concepts(),
-        "industry": build_industries(),
         "sector": load_sectors(),
     })
 
